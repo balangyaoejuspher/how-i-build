@@ -20,3 +20,6 @@ yarn-debug.log*
 yarn-error.log*
 
 context-blueprint.md
+
+# Internal repo config (imported via GitHub UI, not pushed)
+.github/rulesets/

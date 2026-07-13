@@ -1,43 +1,76 @@
-# Website
+# How I Build
 
-This website is built using [Docusaurus](https://docusaurus.io/), a modern static website generator.
+[![Deploy to GitHub Pages](https://github.com/balangyaoejuspher/how-i-build/actions/workflows/deploy.yml/badge.svg)](https://github.com/balangyaoejuspher/how-i-build/actions/workflows/deploy.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Docusaurus](https://img.shields.io/badge/Made%20with-Docusaurus-3ECC5F)](https://docusaurus.io/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
-## Installation
+A blueprint-driven blog on how I plan, build, and operate production systems from scratch.
 
-```bash
+Live at **https://balangyaoejuspher.github.io/how-i-build/**
+
+## What this is
+
+The blog is organized around a six-phase framework, published in reading order:
+
+1. **Foundation.** Users, MVP, critical path, workload profile, first-order architecture.
+2. **Tech Stack.** Package selection, version pinning, database schema, primary-key strategy.
+3. **Resiliency.** Failure modes, real-world incidents (BullMQ, WAF outages, contract drift).
+4. **Standards.** Clean architecture, CI guardrails, duplication and technical debt.
+5. **AI Discipline.** Prompt patterns, the blind-paste antipattern, agentic workflow, career traps.
+6. **Working Practices.** Code review, hiring, mentorship.
+
+Every post traces back to a written framework, every recommendation names its trade-offs, and every AI-related post shows how to use assistants without letting them ship your next incident.
+
+Start with the [Start Here](https://balangyaoejuspher.github.io/how-i-build/start-here) page for a curated map.
+
+## Local development
+
+```powershell
 npm install
-```
-
-**Note**: feel free to use the package manager of your choice.
-
-## Local Development
-
-```bash
 npm run start
 ```
 
-This command starts a local development server and opens up a browser window. Most changes are reflected live without having to restart the server.
+Opens `http://localhost:3000/how-i-build/` with hot reload.
 
-## Build
-
-```bash
+```powershell
 npm run build
 ```
 
-This command generates static content into the `build` directory and can be served using any static contents hosting service.
+Generates the static site into `./build`. This is the exact command that CI runs.
 
-## Deployment
-
-Using SSH:
-
-```bash
-USE_SSH=true npm run deploy
+```powershell
+npm run serve
 ```
 
-Not using SSH:
+Serves the built site locally to preview production output.
 
-```bash
-GIT_USER=<Your GitHub username> npm run deploy
-```
+## Stack
 
-If you are using GitHub Pages for hosting, this command is a convenient way to build the website and push to the `gh-pages` branch.
+- Docusaurus 3 with the `@docusaurus/faster` (Rspack) preset.
+- MDX for blog posts.
+- Mermaid diagrams via `@docusaurus/theme-mermaid`.
+- TypeScript for config.
+- Deployed to GitHub Pages via `.github/workflows/deploy.yml`.
+
+## Contributing
+
+Contributions welcome. New blog posts, corrections, typo fixes, and broken-link reports are all fair game via PR.
+
+Before opening a PR, please read [CONTRIBUTING.md](./CONTRIBUTING.md). It covers the style rules (no em dashes in prose, no code comments), the dating and slug conventions, the blueprint sync requirement, and the review process.
+
+## Related work
+
+- **WAF Survival Guide.** Cross-provider (GCP Cloud Armor, AWS WAF, Cloudflare) developer-first WAF handbook. https://balangyaoejuspher.github.io/waf-survival-guide/
+
+## Author
+
+Juspher Balangyao. Software Engineer.
+
+- GitHub: [@balangyaoejuspher](https://github.com/balangyaoejuspher)
+
+## License
+
+MIT. See [LICENSE](./LICENSE).
+
+The blog posts (prose content) may be quoted or referenced with attribution.
