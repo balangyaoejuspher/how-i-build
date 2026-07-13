@@ -60,7 +60,8 @@ const config: Config = {
 
   themeConfig: {
     colorMode: {
-      respectPrefersColorScheme: true,
+      defaultMode: 'light',
+      respectPrefersColorScheme: false,
     },
     navbar: {
       title: 'How I Build',
