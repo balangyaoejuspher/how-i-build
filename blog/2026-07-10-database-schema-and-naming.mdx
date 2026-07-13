@@ -1,0 +1,219 @@
+---
+title: "How I Build: Database Schema, Naming Conventions, MySQL vs PostgreSQL vs NoSQL, and Choosing Primary Keys"
+authors: [balangyaoejuspher]
+tags: [architecture, tech-stack, standards]
+date: 2026-07-10
+slug: /database-schema-and-naming
+---
+
+Data outlives everything. You will rewrite the frontend three times. You will migrate the framework once. You will *never* fully change the shape of the data, because by the time you want to, real customers have real records that depend on every wrong decision you made in month one.
+
+That is why this is the section of the series where "opinionated defaults, deviate only with a written reason" matters most. This post covers the three data decisions that decide most of your future pain: which engine, how you name things, and what you use as a primary key.
+
+None of it is glamorous. All of it will still be there in 2035.
+
+{/* truncate */}
+
+## Section 1: Which Database Engine
+
+The question "what database should I use?" gets answered wrong by defaulting to whatever is trending on Hacker News. The right way to answer it is to name the workload (read-heavy, write-heavy, mixed), name the consistency requirements, name the query patterns (single-row lookups, joins, aggregations, graph traversal, full-text search), and then look at the table.
+
+| Engine class            | Concrete examples                | Best fit                                                    | Wrong choice when                                          | Ops cost | Ecosystem  |
+| ----------------------- | -------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------- | -------- | ---------- |
+| Relational (mainstream) | PostgreSQL, MySQL / MariaDB      | Anything with real relationships, ACID needs, or complex queries. The correct default. | You truly have no relationships and only single-item lookups at massive scale. | Low       | Massive    |
+| Embedded relational     | SQLite, DuckDB                   | Local apps, tests, single-writer analytics, edge deploys.    | Concurrent writers at web scale.                            | Zero     | Excellent  |
+| Document                | MongoDB, DocumentDB, Couchbase   | Data shape genuinely varies per document. Content management. | You then need joins between documents (you will).           | Medium    | Wide       |
+| Key-value               | Redis, DynamoDB, KeyDB           | Caches, sessions, single-key access at very high throughput. | You need queries over anything other than the primary key. | Low to Medium | Broad  |
+| Wide-column             | Cassandra, ScyllaDB, HBase       | Extreme write throughput, well-known access patterns, time-series. | You need ad-hoc queries. Consistency requirements are strict. | High     | Narrow     |
+| Graph                   | Neo4j, ArangoDB (multi-model)    | Traversal-heavy workloads (social graphs, permissions, fraud rings). | You do not have a graph problem (most people do not).      | High     | Narrow     |
+| Search                  | Elasticsearch, OpenSearch, Meilisearch, Typesense | Full-text search, faceted filters, log aggregation.        | Source of truth for anything.                              | High     | Wide       |
+| Time-series             | TimescaleDB, InfluxDB, Prometheus | Metrics, IoT sensor data, event streams with time as primary axis. | Traditional CRUD.                                          | Medium    | Focused    |
+| Distributed relational  | CockroachDB, Vitess, Aurora DSQL | Multi-region strong consistency, horizontal write scale.     | You are one team, one region, and one Postgres would work.  | Very high | Growing    |
+| Analytical (OLAP)       | ClickHouse, BigQuery, Snowflake  | Analytics, reporting, columnar workloads with GB-to-PB scans. | Transactional writes.                                      | Varies    | Growing    |
+
+Now, my defaults across the categories most teams face.
+
+### PostgreSQL vs MySQL
+
+For 90% of new services, use **PostgreSQL**. Reasons:
+
+- **Real types.** `TIMESTAMPTZ`, `JSONB`, arrays, ranges, `ENUM`, `INET`, `UUID`, `NUMERIC` with real precision. MySQL's type system is a decade behind and it shows in the workarounds.
+- **JSONB is production-grade.** You can store, index, and query flexible JSON alongside relational data. This eliminates the "we need MongoDB for this feature" argument in most cases.
+- **Strong constraints.** `CHECK` constraints, deferrable constraints, partial and expression indexes, exclusion constraints. MySQL has none of these to the same standard.
+- **Correctness by default.** MySQL's historical willingness to silently truncate data, accept "0000-00-00" as a date, or silently coerce types has produced more incidents than I can count. Postgres refuses to do the wrong thing.
+- **Better replication story.** Logical replication, streaming replication, and read replicas are first-class in Postgres.
+
+Choose **MySQL** when: you have a team that already runs MySQL well and hiring for Postgres skills locally is hard, or you specifically depend on a MySQL-native tool (e.g., ProxySQL, PlanetScale), or you are on a managed service where MySQL flavors are dramatically cheaper for your scale.
+
+Choose neither if: your workload is genuinely non-relational (see below).
+
+### When NoSQL is Actually the Right Answer
+
+The honest cases:
+
+- **Redis (or another key-value store)** for anything that is a cache, a session store, a rate-limiter counter, a distributed lock, or a job queue backend. Never as a source of truth.
+- **DynamoDB** when you are all-in on AWS, you have a well-understood access pattern per table, and you need to pay per request. If you are querying it in more than three shapes, you are using it wrong and should have picked Postgres.
+- **A document store** when the document shape genuinely varies per record and you truly do not need cross-document joins. Content management systems, product catalogs with wildly heterogeneous attributes, form-builder data. If you find yourself writing `$lookup` (the MongoDB equivalent of a join) more than once a week, you should have picked Postgres.
+- **A search engine** as a secondary index, populated from Postgres, when you need genuine full-text or faceted search. Never as the primary store.
+- **A time-series database** when your writes are timestamps and your queries are ranges over time. TimescaleDB is Postgres, which is often the easiest migration path.
+
+The dishonest cases (where you should have picked Postgres):
+
+- "We need NoSQL because we might scale." You will not. Postgres scales to millions of rows and thousands of writes per second on a single decent machine. You will hit the wall of your team's operational maturity long before you hit the wall of Postgres.
+- "We need schema flexibility." Postgres has JSONB. Store the flexible parts as JSONB, keep the relational parts relational. You get both.
+- "MongoDB is easier to start with." It is easier to *start* with. It is significantly harder to *fix* when your access patterns evolve and you now need joins the schema was not designed for.
+
+## Section 2: Naming Conventions
+
+Naming conventions are the cheapest thing in this post and the one that causes the most silent long-term pain when neglected. Pick the rules, write them down (System DNA, per the earlier post), and enforce them via linting or code review.
+
+The conventions I use and defend:
+
+**Casing: `snake_case` for everything, always.** SQL identifiers in mixed case require quoting in Postgres and become case-insensitive in MySQL, both of which produce hilarious bugs. `snake_case` avoids all of it.
+
+**Tables: plural nouns.** `users`, `orders`, `reservations`. A table is a *collection* of rows; the plural reflects that. This is a religious debate; pick one side and stop arguing.
+
+**Columns: singular nouns, no ambiguous suffixes.** `email`, `created_at`, `order_id`. Never `emailAddr`, `orderid`, `dt_created`. If a column stores a boolean, name it as a predicate: `is_active`, `has_shipped`, `was_refunded`.
+
+**Foreign keys: `{referenced_table_singular}_id`.** A column pointing at `orders` is `order_id`. Not `order`, not `orders_id`, not `fk_order`. Every ORM and every human on the team infers relationships from this pattern.
+
+**Primary keys: `id`, always.** The primary key of the `orders` table is `id`, not `order_id`. Foreign keys carry the name of what they reference; primary keys do not repeat the table name.
+
+**Join tables: `{table_a}_{table_b}` in alphabetical order.** `orders_products`, not `products_orders`. Alphabetical order removes debate and makes the table discoverable.
+
+**Indexes: `idx_{table}_{columns}`.** `idx_orders_customer_id_created_at`. Not the auto-generated garbage your ORM produces. Named indexes are named because someone read the query plan and decided they were worth having.
+
+**Constraints: named explicitly.** `chk_orders_total_non_negative`, `uniq_users_email`, `fk_orders_customer_id`. Anonymous constraints produce error messages nobody can act on. Named constraints tell the on-call engineer exactly what invariant just fired.
+
+**Timestamps: `created_at`, `updated_at`, `deleted_at`, always `TIMESTAMPTZ` (Postgres) or `DATETIME` set to UTC (MySQL).** Never `date_created`, never local time. UTC is a hard rule: store UTC, convert at display time, and you will never debug a daylight-saving-time incident.
+
+**Money: `NUMERIC(19, 4)` for amounts in the smallest currency unit (cents), and always paired with a `currency` column.** Not `FLOAT`. Not `DECIMAL(10, 2)` without a currency column. Money without currency is a bug that will ship to production and become an audit finding.
+
+**Reserved words: never.** Do not name a column `user`, `order`, `group`, `type`, `time`, `date`, `desc`, `key`. Every database has a list of reserved words. Assume any noun you like is on it and pick something less common.
+
+**Booleans: no negatives.** `is_active`, not `is_inactive`. Reading `WHERE NOT is_inactive` is a category of bug that only exists because someone thought negatives were clever.
+
+An illustrative Postgres schema that follows all of the above:
+
+```sql
+CREATE TABLE customers (
+    id           BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    public_id    UUID NOT NULL DEFAULT gen_random_uuid(),
+    email        CITEXT NOT NULL,
+    is_active    BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at   TIMESTAMPTZ,
+    CONSTRAINT uniq_customers_email UNIQUE (email),
+    CONSTRAINT uniq_customers_public_id UNIQUE (public_id)
+);
+
+CREATE TABLE orders (
+    id            BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    public_id     UUID NOT NULL DEFAULT gen_random_uuid(),
+    customer_id   BIGINT NOT NULL,
+    total_cents   NUMERIC(19, 4) NOT NULL,
+    currency      CHAR(3) NOT NULL,
+    status        TEXT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at    TIMESTAMPTZ,
+    CONSTRAINT fk_orders_customer_id FOREIGN KEY (customer_id) REFERENCES customers (id),
+    CONSTRAINT chk_orders_total_non_negative CHECK (total_cents >= 0),
+    CONSTRAINT chk_orders_currency_iso CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT uniq_orders_public_id UNIQUE (public_id)
+);
+
+CREATE INDEX idx_orders_customer_id_created_at
+    ON orders (customer_id, created_at DESC)
+    WHERE deleted_at IS NULL;
+```
+
+Note the specific choices: `BIGINT` internal id, `UUID public_id` for external references (see next section), `CITEXT` for case-insensitive email, `TIMESTAMPTZ` throughout, money in cents with paired currency, named constraints, named index, partial index that excludes soft-deleted rows.
+
+## Section 3: Primary Keys, and Why This Matters More Than You Think
+
+The primary key decision has downstream effects on index performance, security, sharding, API design, and debugging. Get it wrong at the start and every table inherits the wrong choice.
+
+| Strategy                       | Size (bytes) | Sortable   | Generated where       | Enumeration risk | Index locality       | External-safe?      | When to use                                                                 |
+| ------------------------------ | ------------ | ---------- | --------------------- | ---------------- | -------------------- | ------------------- | --------------------------------------------------------------------------- |
+| Auto-increment `BIGINT`         | 8            | Yes (natural) | Database             | High (predictable) | Excellent            | No (leaks count)    | Internal identifiers for large tables. Fast joins, small indexes.            |
+| Auto-increment `INT`            | 4            | Yes        | Database              | High             | Excellent            | No                  | Never in a new system. `INT` overflows at 2.1B. Use `BIGINT`.                |
+| UUID v4 (random)                | 16           | No         | Anywhere              | None              | Terrible (random writes destroy B-tree cache) | Yes | External-facing IDs only when you must not leak time information.           |
+| UUID v7 (time-ordered)          | 16           | Yes (lexicographic) | Anywhere      | None              | Good                 | Yes                 | Modern default when you want globally-unique, time-sortable, external-safe IDs. |
+| ULID                            | 16 (26 chars b32) | Yes  | Anywhere              | None              | Good                 | Yes                 | Same use case as UUID v7. Choose based on library support in your stack.     |
+| KSUID                           | 20            | Yes        | Anywhere              | None              | Good                 | Yes                 | Same use case. Popularized by Segment.                                       |
+| Snowflake ID                    | 8 (BIGINT)   | Yes        | Coordinated (worker IDs) | None (but predictable per worker) | Excellent | Depends       | Distributed systems with a coordinated worker-ID scheme (Twitter's original). |
+| Natural key (email, SKU, etc.) | Varies       | Depends    | External              | High              | Depends              | Depends             | Never as a primary key. Use as a `UNIQUE` constraint, not `PRIMARY KEY`.     |
+
+### The Only Two Choices That Make Sense in 2026
+
+**Option A: Dual keys. `BIGINT` internal, UUID v7 external.**
+
+Every table has two identifier columns: an internal `id BIGINT` used for foreign keys and joins, and a `public_id UUID` (v7) used in every API response and every URL. This gives you:
+
+- Small, fast internal joins on `BIGINT`.
+- Excellent B-tree locality on the primary key (because `BIGINT` is sequential).
+- No enumeration attacks externally (because `public_id` is random enough to not be guessable, and time-ordered enough to be useful).
+- Cursor-based pagination that works out of the box (order by `public_id`).
+- The internal count is not leaked to external clients.
+
+This is what the schema example in Section 2 uses. It is the option I default to on any new project where I control both the database and the API.
+
+**Option B: UUID v7 as the sole primary key.**
+
+Every table uses UUID v7 as its primary key. No internal integer at all. Advantages:
+
+- One identifier per row instead of two. Simpler.
+- Trivially safe to distribute IDs across services, generate client-side, or merge shards.
+- No difference between internal and external.
+
+Disadvantages:
+
+- Every foreign key is 16 bytes instead of 8. On a table with 100M rows and 5 foreign keys, that is 4 GB of index bloat compared to `BIGINT`.
+- Joins are slower than with `BIGINT` (measurably, though usually not catastrophically).
+- If your database driver returns UUIDs as strings, you pay serialization cost on every query.
+
+This is the option to choose when you know you will be distributing ID generation (e.g., client-side offline-first apps, event-sourced systems where every event needs an ID at publish time, multi-region setups with active writers everywhere).
+
+### The Two Choices That Never Make Sense
+
+- **UUID v4 as a primary key on a large table in Postgres or MySQL.** Random UUIDs destroy the B-tree index locality that these engines depend on. Every INSERT touches a random page. Write throughput drops by 3x to 10x compared to sequential keys. The internet is full of blog posts documenting this. Do not learn it the hard way.
+- **Auto-increment INT (not BIGINT).** Yes, most systems will never hit 2.1 billion rows. Some will. The cost of migrating an `INT` primary key to `BIGINT` on a live table is enormous. The cost of picking `BIGINT` from the start is zero. This is the definition of a decision you make once, cheaply, and never revisit.
+
+## Section 4: The Cross-Cutting Conventions Nobody Documents
+
+Beyond naming and keys, four decisions that quietly matter:
+
+**Soft delete: `deleted_at TIMESTAMPTZ NULL`, with a partial index that excludes deleted rows.** Do not use a boolean `is_deleted` (loses information about when). Do not hard-delete anything from a table with foreign keys pointing at it. Every query must filter `WHERE deleted_at IS NULL` (or use a view that does it for them). Every index that supports common queries should be partial: `WHERE deleted_at IS NULL`, so soft-deleted rows do not bloat it.
+
+**Multi-tenancy: `tenant_id` column on every tenant-scoped table, plus row-level security in Postgres.** The alternative (schema-per-tenant) sounds cleaner but scales terribly past a few hundred tenants (migrations become nightmarish). Row-level security lets you enforce tenant isolation at the database, not just in application code, which is where the security-critical version of this belongs.
+
+**Migrations: single-direction, forward-only in production. Test the down migration in staging or CI.** Every migration is a small, reversible-in-staging, unreversible-in-production change. Never "let me add and drop a column in the same migration to see what happens." Split into forward-only steps: add nullable column, backfill, add NOT NULL, deploy code that uses it. Postgres and MySQL will forgive you many sins, but they will not forgive a botched migration on a table with 200M rows during a Friday deploy.
+
+**Enums: `TEXT` with a `CHECK` constraint, not a native `ENUM`.** Native enums (both Postgres and MySQL) are painful to alter without downtime. `TEXT` with `CHECK (status IN ('pending', 'paid', 'refunded'))` gives you the same safety with none of the ALTER pain.
+
+## Prompting a Data Model, Not a Tutorial
+
+Ask AI "write me the schema for a booking system" and you get an aggregate of every tutorial on the internet, complete with `INT id`, VARCHAR email, and a `deleted BOOLEAN` column. Not useful.
+
+Force the model to justify its choices against the workload:
+
+> **Role:** Data engineer designing a production schema.
+> **Context:** Building a [Product] with expected volume of [X rows in main table] over [Y years]. Read-to-write ratio is [Z]. External identifiers are exposed via API to [customers / internal only]. Multi-tenant: [yes / no]. Existing conventions to follow: [System DNA reference].
+> **Task:** Propose the schema. For each table, justify (a) the primary key strategy, (b) column types (especially timestamps, money, and text), (c) indexes required for the top three query shapes, and (d) constraints that enforce business invariants.
+> **Constraint:** Do not use `INT` for any auto-increment column. Do not use `FLOAT` for money. Do not use native `ENUM` types. Justify every deviation from `snake_case`, plural table names, and the `id` + `public_id` dual-key pattern.
+
+That prompt turns "write me a schema" from a copy-paste exercise into a design conversation. What comes back is something you can actually challenge and iterate on, not a hello-world snippet you then have to rewrite.
+
+## Boring Beats Clever
+
+The three highest-value things you can do this week for your data layer:
+
+1. **Write down your naming conventions.** One file, one page, added to System DNA. Every future PR (from humans and agents) references it.
+2. **Standardize on `BIGINT` + `UUID v7` (or ULID) for primary keys.** Migrate as you touch tables. New tables get it from day one.
+3. **Pick Postgres unless you have a written reason to pick something else.** The reason should not be "I like Mongo." The reason should be "our workload is X and Postgres cannot do Y for reason Z." If you cannot articulate Y and Z, pick Postgres.
+
+None of this is exciting. None of it will get you a conference talk. All of it is the difference between a schema you are still happy with in 2035 and a schema you rewrite twice while apologizing to customers about IDs that changed.
+
+Boring beats clever. Especially in the data layer.

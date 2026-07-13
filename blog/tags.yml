@@ -1,0 +1,44 @@
+architecture:
+  label: Architecture
+  permalink: /architecture
+  description: System architecture posts
+
+planning:
+  label: Planning
+  permalink: /planning
+  description: Pre-development planning posts
+
+mvp:
+  label: MVP
+  permalink: /mvp
+  description: Scope, critical path, and MVP definition posts
+
+tech-stack:
+  label: Tech Stack
+  permalink: /tech-stack
+  description: Framework and library selection posts
+
+risk-management:
+  label: Risk Management
+  permalink: /risk-management
+  description: Production risk and mitigation posts
+
+resiliency:
+  label: Resiliency
+  permalink: /resiliency
+  description: Failure-mode design and recovery posts
+
+standards:
+  label: Standards
+  permalink: /standards
+  description: Coding standards and automated guardrail posts
+
+devops:
+  label: DevOps
+  permalink: /devops
+  description: CI/CD, deployment, and operational posts
+
+ai:
+  label: AI
+  permalink: /ai
+  description: AI-assisted development, prompt patterns, and agent discipline

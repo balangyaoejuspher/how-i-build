@@ -1,0 +1,187 @@
+---
+title: "How I Build: Real-World Resilience with BullMQ, Downstream Outages, and Cross-Team Contract Drift"
+authors: [balangyaoejuspher]
+tags: [architecture, resiliency, risk-management, devops]
+date: 2026-07-03
+slug: /real-world-resilience-bullmq-and-contracts
+---
+
+Textbook resiliency is one dependency, one failure, one clean fallback. Real production outages are not that clean. They involve a job queue that keeps growing, a third-party API that is *sort of* responding, a stale connection nobody noticed, and a consumer team that got a schema change from Slack instead of from CI.
+
+Three scenarios that have broken production in systems I have worked on or reviewed, and the mitigation stack that would have prevented each one.
+
+{/* truncate */}
+
+## Scenario 1: The Job Queue That Cannot Save Itself
+
+The setup is familiar. A payment webhook arrives. The API handler enqueues a `charge-customer` job into BullMQ (backed by Redis). A pool of workers pulls jobs off the queue and calls the payment provider's API.
+
+Now the payment provider starts timing out. Not down, just slow. Every job takes 30 seconds instead of 300 milliseconds.
+
+Here is what happens if you did nothing:
+
+1. Workers block on the slow API. Job throughput drops to a trickle.
+2. New jobs arrive faster than workers can drain. The queue depth grows unbounded.
+3. Redis memory pressure climbs because BullMQ keeps job data in Redis.
+4. Failed jobs get retried on the default policy, hammering the already-broken provider harder.
+5. Eventually Redis runs out of memory or the workers OOM, and now you have both a queue outage *and* a partial-payment problem to reconcile.
+
+One slow dependency ate your entire payments pipeline in about fifteen minutes.
+
+**The mitigation stack:**
+
+- **Per-job idempotency keys.** Every payment attempt carries a client-generated key (usually the webhook ID or an `Idempotency-Key` header from the provider). Your handler checks the key against a persistent store before charging. Retries are safe by construction, not by wishful thinking.
+- **Bounded retries with exponential backoff and jitter.** BullMQ's default retry policy is too aggressive under partial-outage conditions. Cap attempts, back off exponentially, and add jitter so retries do not synchronize into a thundering herd.
+- **A dead-letter queue.** Jobs that exhaust their retries do not disappear. They land in a separate queue that is monitored by humans. Silent failures are always worse than loud ones.
+- **A circuit breaker on the outbound call.** After N consecutive failures against the payment provider, workers stop calling it for a cooldown period. Half-open probes decide when to resume. Without this pattern, every downstream outage becomes your outage.
+- **A producer-side kill switch.** Feature-flag the code path that enqueues jobs so an on-call engineer can pause new work when things are on fire, without deploying anything.
+- **Queue depth alerts.** Alert on both absolute depth and rate of change. A queue growing at 500 jobs per minute is a signal you need before it becomes an incident.
+
+The concrete shape of the BullMQ worker with these controls in place:
+
+```typescript
+import { Worker, Queue } from 'bullmq';
+import CircuitBreaker from 'opossum';
+import { chargeCustomer } from './payment-provider';
+import { alreadyProcessed, markProcessed } from './idempotency-store';
+
+const breaker = new CircuitBreaker(chargeCustomer, {
+  timeout: 5000,
+  errorThresholdPercentage: 50,
+  resetTimeout: 30000,
+  rollingCountTimeout: 10000,
+  rollingCountBuckets: 10,
+});
+
+const worker = new Worker(
+  'payments',
+  async (job) => {
+    const idempotencyKey = job.data.webhookId;
+
+    if (await alreadyProcessed(idempotencyKey)) {
+      return { skipped: true, reason: 'already-processed' };
+    }
+
+    const result = await breaker.fire(job.data);
+    await markProcessed(idempotencyKey, result);
+    return result;
+  },
+  {
+    connection: redisConnection,
+    concurrency: 10,
+    settings: {
+      backoffStrategy: (attemptsMade) => {
+        const base = Math.min(1000 * 2 ** attemptsMade, 60_000);
+        const jitter = Math.floor(Math.random() * 250);
+        return base + jitter;
+      },
+    },
+  },
+);
+
+worker.on('failed', async (job, err) => {
+  if (job && job.attemptsMade >= (job.opts.attempts ?? 5)) {
+    await deadLetterQueue.add('failed-payment', {
+      originalJobId: job.id,
+      data: job.data,
+      lastError: err.message,
+    });
+  }
+});
+```
+
+Notice what is not in the code: no bare `try/catch` that swallows the error and returns `null`. Every failure either retries (bounded), trips the breaker (protects the provider), or lands in the dead-letter queue (visible to humans). At no point does the system pretend everything is fine.
+
+## Scenario 2: Infrastructure Fails in the Middle of Work
+
+The setup: same BullMQ workers, healthy provider. This time the Redis primary fails over to a replica during a routine maintenance window.
+
+What breaks:
+
+1. Worker connections to the old primary go stale. Some operations succeed, some hang, some return errors the client library did not expect.
+2. Jobs that were mid-processing may be considered "stalled" by BullMQ and picked up by a *different* worker on the new primary. You may now have two workers running the same job.
+3. If either of those workers commits a database change without idempotency, you have double-charged the customer.
+4. Worker health probes may still report healthy because the process is running, so the orchestrator does not evict them.
+
+This is the outage that teaches you the difference between "the queue is up" and "the queue is correct."
+
+**The mitigation stack:**
+
+- **Accept at-least-once semantics as the baseline.** Exactly-once delivery across a distributed system is a marketing phrase. Design as if every message will be delivered more than once, and lean on idempotency (see Scenario 1) to make it safe.
+- **Handler-level idempotency, not queue-level.** Do not trust the queue to deduplicate. Trust your handler and its idempotency store.
+- **Connection auto-reconnect with a capped retry budget.** ioredis and its BullMQ wrapper reconnect by default. Confirm your settings actually retry, but also cap them: infinite reconnect masks a real outage.
+- **Aggressive health probes on workers.** The health check should verify the worker can talk to Redis *and* the database, not just that the Node process is alive. A worker that cannot reach its dependencies is unhealthy even if it is running.
+- **Stalled-job configuration you understand.** BullMQ's `stalledInterval` and `maxStalledCount` decide when a "stuck" job is reassigned. The defaults are fine for most cases, but you should know what they are, not discover them mid-incident.
+
+The correctness contract is: **any job may run twice; running it twice must produce the same result as running it once.** If you cannot guarantee that at the handler level, no amount of queue configuration will save you.
+
+## Scenario 3: The Consumer Team Nobody Told
+
+The setup: the `orders` service publishes an `order.created` event to a broker. Three consumer services subscribe (inventory, notifications, analytics). One day the orders team ships a change that renames `customerEmail` to `customer.email` (nested). They test it in the orders repo, deploy, celebrate.
+
+Meanwhile the notifications consumer expects `customerEmail` at the top level. On the first event after deploy, it throws. Then it retries. Then it dead-letters. Every new order silently produces a broken notification pipeline. Nobody notices for hours because the orders team's deploy dashboard is green.
+
+This is the outage that teaches you the difference between "my service works" and "the system works."
+
+**The mitigation stack:**
+
+- **Consumer-driven contract tests.** Each consumer publishes a Pact (or equivalent) describing what it expects. The producer's CI runs those consumer contracts as part of its own pipeline. A schema-breaking change fails the producer's build *before* it merges, in the producer's repo, with the offending diff on the screen.
+- **A schema registry with backward-compat rules.** For event-driven systems, run the producer's schemas through a registry (Confluent Schema Registry, Buf Schema Registry, or a homegrown JSON Schema store) that rejects backward-incompatible changes at publish time.
+- **Explicit event versioning.** Every event carries a `schemaVersion` field. Consumers pin to the versions they understand. Producers publish new versions in parallel with the old for a deprecation window.
+- **A dependency graph nobody has to remember.** Every service registers which events it consumes and which it produces. The catalog is inspectable in CI, so "who is affected by this schema change" is a query, not a Slack question.
+- **Deprecation windows measured in weeks, not deploys.** Old event shapes stay supported for a known period. Breaking changes require an explicit, dated deprecation announcement plus consumer sign-off.
+
+A minimal Pact-style consumer contract for the notifications service looks like:
+
+```typescript
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+
+const provider = new PactV3({
+  consumer: 'notifications-service',
+  provider: 'orders-service',
+});
+
+describe('order.created event contract', () => {
+  it('carries the fields notifications requires', async () => {
+    provider
+      .given('an order has just been created')
+      .uponReceiving('an order.created event')
+      .withRequest({ method: 'POST', path: '/events/order.created' })
+      .willRespondWith({
+        status: 200,
+        body: {
+          orderId: MatchersV3.uuid(),
+          customerEmail: MatchersV3.email(),
+          totalCents: MatchersV3.integer(),
+          currency: MatchersV3.regex('^[A-Z]{3}$', 'USD'),
+        },
+      });
+
+    await provider.executeTest(async (mockServer) => {
+      await sendTestEvent(mockServer.url);
+    });
+  });
+});
+```
+
+The magic is not the test itself. It is that the *producer's* CI runs this file (published to a Pact broker) and fails if the orders team removes `customerEmail`. The failure surfaces in the pull request that caused it, not in production three hours later.
+
+## The Common Thread
+
+Every one of these outages has the same root cause: **a boundary between systems (or teams) that was not enforced by code.**
+
+- Scenario 1: the boundary between the payment provider and your workers, unprotected by a circuit breaker.
+- Scenario 2: the boundary between the queue infrastructure and your handlers, unprotected by idempotency.
+- Scenario 3: the boundary between the producer and the consumer, unprotected by a contract.
+
+None of these are fixable inside a single repository. The mitigation lives *between* codebases, in tests that run across services, in registries that enforce compatibility, in patterns that assume the network will fail.
+
+## A Runbook Per Dependency, or You Are Guessing
+
+Every dependency your system has (external API, infrastructure, other team's service) needs a written answer to three questions, filed before the code ships:
+
+1. **What is the correct behavior when this dependency is completely unreachable?**
+2. **What is the correct behavior when this dependency is degraded but not down?**
+3. **Who is on the other side of this dependency, and what is the contract they think they have with us?**
+
+Any dependency without those three answers is your next outage. You do not get to know which one first. You only get to know that it will happen, and that the on-call engineer inheriting it will not be you.

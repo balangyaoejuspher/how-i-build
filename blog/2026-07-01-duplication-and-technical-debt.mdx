@@ -1,0 +1,144 @@
+---
+title: "How I Build: Duplicated Functions and Technical Debt You Can Actually Pay Off"
+authors: [balangyaoejuspher]
+tags: [architecture, standards, tech-stack]
+date: 2026-07-01
+slug: /duplication-and-technical-debt
+---
+
+Every mature codebase I have inherited had the same three problems: functions that did almost the same thing in three different files, abstractions that were extracted too early and now blocked every change, and a "technical debt" backlog that nobody looked at because nobody believed it would ever get paid down.
+
+Standards do not stop duplication. Discipline does. And discipline needs tools, rules, and a budget.
+
+{/* truncate */}
+
+## Section 1: Why Duplication Actually Happens
+
+The common story is "developers are lazy and just copy-paste." That is wrong. Duplication is almost always created by good engineers under a bad system.
+
+The real causes:
+
+- **Deadline pressure.** Refactoring an existing helper takes 30 minutes and a code review. Copy-pasting it takes 30 seconds. Under a deadline, the second option wins every time.
+- **Poor discoverability.** In a repo with 400 files across 12 domains, a developer cannot know a helper already exists. If the function was named `formatCurrency` in one place and `moneyString` in another, the second author had no way to find the first.
+- **Team silos.** Team A wrote `validateEmail` in their service. Team B needed the same thing three months later and wrote their own. Neither had visibility into the other's code.
+- **AI suggestions.** Modern coding assistants happily regenerate helpers that already exist in your repo. Without a prompt that grounds the model in your codebase, you get a fresh implementation of every utility, in a slightly different style, every time.
+
+Fixing duplication starts with acknowledging the systemic causes. Blaming individual developers produces a culture of quiet copy-paste. Fixing the system produces a codebase that stays coherent.
+
+## Section 2: The DRY Overcorrection
+
+"Don't Repeat Yourself" is the most misapplied rule in software. Taken literally, it produces the opposite of maintainable code.
+
+Consider two functions that look identical today:
+
+```typescript
+function formatOrderTotal(cents: number, currency: string): string {
+  const amount = (cents / 100).toFixed(2);
+  return `${currency} ${amount}`;
+}
+
+function formatRefundAmount(cents: number, currency: string): string {
+  const amount = (cents / 100).toFixed(2);
+  return `${currency} ${amount}`;
+}
+```
+
+The instinct is to extract a shared `formatMoney(cents, currency)` helper. **Do not do this yet.**
+
+These two functions look the same but represent different concepts. Six months from now, marketing decides that refund amounts should be shown with a leading minus sign, or that order totals should be shown with locale-aware separators, or that refunds in a certain currency need a footnote. If you extracted the helper on day one, you now have to add a `type` parameter, then a `showSign` flag, then a `locale` argument, and the "shared" function becomes a switchboard nobody wants to touch.
+
+The rule I follow: **duplication of code is cheap; the wrong abstraction is expensive.** Two identical functions with different intents are easier to change independently than one function with three flags. Only extract when the concept behind the duplication is genuinely the same.
+
+The heuristic for "genuinely the same" is the **Rule of Three**: tolerate the first duplicate, notice the second, extract on the third. By the third occurrence, you have enough examples to see whether the abstraction is real or coincidental.
+
+## Section 3: Detecting Duplication Automatically
+
+You cannot fix what you cannot see. Every serious codebase needs a duplication scanner running in CI.
+
+The tool I reach for on JavaScript and TypeScript projects is `jscpd` (Copy/Paste Detector). It flags syntactically-identical blocks above a configurable size threshold. Add it as a dev dependency and wire it into the pipeline:
+
+```json
+{
+  "scripts": {
+    "duplication": "jscpd src --min-lines 8 --min-tokens 50 --threshold 3 --reporters console,json --output ./reports/duplication"
+  },
+  "devDependencies": {
+    "jscpd": "4.0.5"
+  }
+}
+```
+
+Then the CI step (extending the pipeline from Post 4):
+
+```yaml
+duplication-check:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 9
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: pnpm
+    - run: pnpm install --frozen-lockfile
+    - run: pnpm run duplication
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: duplication-report
+        path: ./reports/duplication
+```
+
+The `--threshold 3` flag is doing real work. It sets a maximum acceptable duplication percentage. If the codebase creeps above 3%, the build fails and someone has to either refactor or (explicitly) raise the threshold with a written justification. Silent creep is the enemy.
+
+Two supporting tools worth adding:
+
+- **ESLint's `no-duplicate-imports` and `import/no-duplicates` rules.** Catches the smallest form of duplication (same module imported twice in one file) before it merges.
+- **A semantic search step in code review.** Before adding a new helper, grep or IDE-search for functions with similar names or signatures. This is a habit, not a tool, but it is the single highest-value habit for reducing duplication at authoring time.
+
+## Section 4: Handling Existing Debt Without Pretending
+
+Technical debt is inevitable. Pretending otherwise buys you six months of quiet, followed by a rewrite you did not budget for.
+
+The three practices that actually work:
+
+**A debt log with real fields, not a wiki page.**
+
+A debt entry that says "clean up the auth module" is useless. A debt entry that says "the auth middleware has three copies of the token-decode logic (order-service line 42, user-service line 118, notification-service line 67); blast radius: any auth change requires three PRs; effort: 3 hours to unify; risk: low" is a work item. The debt log lives in the same tracker as feature work, and every entry has an owner and a rough estimate.
+
+**The boy-scout rule, with a boundary.**
+
+Leave code cleaner than you found it during unrelated work, *within the file you are already editing*. Do not open a 12-file refactor while fixing a one-line bug. Do fix a duplicate helper you happen to touch. The boundary is what makes this sustainable: unbounded boy-scouting turns every PR into a review nightmare.
+
+**A fixed percentage of every sprint reserved for debt paydown.**
+
+Twenty percent is the number that works. Zero and debt compounds. Fifty and you are rewriting instead of shipping. The reserved capacity is not "if we have time." It is a budget line item with an owner, tracked the same way as feature velocity.
+
+The single most important thing about debt paydown is that it must be **visible**. Every sprint's debt work goes in the release notes alongside features. If you cannot point to what got fixed, the effort will get cut the first time a deadline slips.
+
+## The Prompt That Makes AI Stop Adding to the Debt
+
+AI coding assistants are the fastest way to generate duplicated logic ever invented. Ask for a helper without naming the ones you already have and you get a fresh implementation every single time.
+
+Load the codebase's existing helpers into the prompt. Force triage, not vibes:
+
+> **Role:** Staff Engineer performing a technical debt audit.
+> **Context:** Below is a module from a [Tech Stack] codebase. The team owns [N] services and has [Y] hours per sprint budgeted for debt.
+> **Task:** Identify (1) duplicated logic (exact and near-duplicates), (2) implicit contracts that should be extracted into named types, and (3) hidden coupling that will make future changes fragile.
+> **Output:** Rank each finding by (a) blast radius if left, (b) effort to fix, and (c) confidence that the fix will not regress behavior. Recommend which to fix now, which to log, and which to leave.
+
+The "leave it alone" option is the one that matters. Not every duplicate is worth fixing, and a debt audit that cannot say so is a wishlist with a nicer name.
+
+## The Codebase You Cannot Maintain Is the One You Own
+
+Duplicated code is a symptom. The disease is a codebase where nobody knows what already exists.
+
+Cure the disease in three ordered moves:
+
+1. **Automated detection**, so duplicates become visible instead of accumulating.
+2. **The Rule of Three**, so you do not extract bad abstractions in the name of cleanliness.
+3. **A real debt budget**, so paying down debt is a scheduled activity, not an aspiration.
+
+Every line you write is a line a stranger will maintain. That stranger is you in six months, with no memory of why any of it exists. Write for them.

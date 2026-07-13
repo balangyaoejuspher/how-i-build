@@ -1,0 +1,85 @@
+---
+title: "How I Build: Seven Engineering Tasks Where AI Is Worse Than Useless"
+authors: [balangyaoejuspher]
+tags: [ai, standards, planning]
+date: 2026-06-27
+slug: /what-ai-is-worse-than-useless-at
+---
+
+Most posts about AI-assisted development are exercises in enthusiasm. This one is the opposite. Not because AI is bad. Because there are specific engineering tasks where AI is *worse than not having any help at all*, and pretending otherwise ships bugs, wastes time, and rots skills.
+
+A wrong answer that looks right is more dangerous than no answer. That is the entire thesis. The seven tasks below are the ones where AI reliably produces plausible-looking wrong answers, and the ones where you should close the tab.
+
+{/* truncate */}
+
+## 1. Novel Debugging
+
+**Why AI fails here:** debugging a bug you have never seen requires the debugger to hold two things simultaneously: what the code says it does, and what the system is actually doing. AI has access only to the first. When you paste a stack trace or an error message, the model matches it against every similar-looking symptom it has ever seen and produces the most statistically likely fix, which is almost never the fix for *your* bug.
+
+The worst version: the fix looks reasonable, you apply it, the symptom disappears, and the actual bug is now hidden behind a workaround that will resurface in a different form in three weeks. You have not debugged. You have suppressed.
+
+**What to do instead:** reproduce the bug locally. Bisect it. Read the code around the failure until you can *predict* the value of every variable at the moment of the crash. That is the only debugging technique that scales past "problems the internet has already seen."
+
+## 2. Security-Critical Code
+
+**Why AI fails here:** security code is defined by the invariants it must not violate, and those invariants are usually not in the file the AI is looking at. The auth middleware might be missing a check. The crypto might use a deprecated primitive. The cookie might be missing the `HttpOnly` flag. The timing might leak information through a comparison that returns early. Every one of these is a plausible-looking piece of code that AI will happily generate.
+
+The worst version: AI produces an authentication check that looks correct because it uses the right function names, but it never actually validates the token signature. You ship. Six months later a bug bounty researcher tells you what your users have known for weeks.
+
+**What to do instead:** security code gets written by a human, reviewed by a second human, and audited against a written threat model. AI can be used for *educational* prompting ("explain the difference between HMAC and RSA signature verification"), but never for generating security-critical code you will ship.
+
+## 3. Performance Optimization
+
+**Why AI fails here:** performance is a global property. AI sees one function. It will happily suggest micro-optimizations that speed up the function by 20% while making the surrounding system slower, because it does not see the connection pool your function shares, the query planner behavior it just perturbed, the cache line it now invalidates, or the garbage collector pressure it now creates.
+
+The worst version: AI rewrites your `for` loop into a "more performant" array method chain. The array method chain allocates three intermediate arrays per iteration. Your production workload was already GC-bound. You just made it worse and the benchmark, which ran on tiny inputs, showed a speedup.
+
+**What to do instead:** measure first. Profile with production-shaped data. Fix the largest bottleneck you can *prove* is a bottleneck. AI is fine for asking "what are the trade-offs of these two implementations?" once you have measured. It is worse than useless for suggesting optimizations without measurement.
+
+## 4. Distributed Systems Reasoning
+
+**Why AI fails here:** distributed systems fail at boundaries, under partial conditions, in states that are hard to reproduce and impossible to test on one machine. AI has no model of what happens when a network partition splits your cluster, when two writers race for the same row, when a leader election takes 45 seconds instead of 500 milliseconds. It will confidently generate code that assumes strong consistency, single-writer semantics, or exactly-once delivery, all of which are lies.
+
+The worst version: you ask AI for a retry policy for a job queue. It gives you exponential backoff. It does not tell you that without jitter, all your retrying workers will synchronize into a thundering herd. Your third-party API is now getting hammered by your own retries and you have made the outage worse.
+
+**What to do instead:** read the primary sources. "Designing Data-Intensive Applications" for the concepts. The actual protocol RFCs for consistency semantics. The docs for your specific message broker or database, all the way through, including the failure-mode section most people skip. Distributed systems is one of the few areas where reading a book still beats any prompt.
+
+## 5. Domain-Specific Business Logic
+
+**Why AI fails here:** business logic is the encoding of invariants that exist in your business, not in general software knowledge. "A refund cannot exceed the original charge." "A booking cannot be moved to a date already occupied by a different booking for the same customer." "A pricing calculation must round up in the customer's favor for regulatory reasons." Every one of these is a rule that lives in a policy doc, a legal agreement, or a founder's head, and the AI has never seen any of them.
+
+The worst version: AI generates an "obvious" implementation of a refund calculation that produces a refund larger than the original charge in an edge case the AI did not model. The bug reaches production. Finance discovers it during an audit. The company owes back-taxes.
+
+**What to do instead:** write the invariants down explicitly. In code, as a test. In docs, as a specification. Show the invariants to the AI when you prompt. Even better, have a human who owns the business rule write the tricky part by hand.
+
+## 6. Codebase-Wide Invariants
+
+**Why AI fails here:** AI works one file at a time, or at best one directory. Real codebases have invariants that span many files: "every service that publishes an event must also register the event in the schema registry," "every database write must go through the audit-log wrapper," "no code outside the domain folder may import from the infrastructure folder." AI does not enforce these because it does not see them.
+
+The worst version: AI generates a "helpful" refactor of one file that quietly bypasses an audit-log wrapper because the wrapper's use was not obvious from the file being refactored. Six months later, an incident response team cannot reconstruct what happened because the audit trail has a hole.
+
+**What to do instead:** encode invariants as automated checks. ESLint rules for import boundaries. Schema-registry CI hooks. Custom linters for domain-specific rules. Every invariant that lives only in a wiki page or a slack message will eventually be violated. AI just accelerates the violation.
+
+## 7. Live Incident Response
+
+**Why AI fails here:** during an incident, engineers are stressed, tired, and pattern-matching for the fastest plausible fix. That is exactly the wrong cognitive state to accept an AI suggestion, because AI's job is to produce the fastest plausible fix. The two modes reinforce each other, and the failure mode is applying a wrong fix under pressure and making the incident worse.
+
+The worst version: production is down, you paste the error log into AI, it suggests a config change, you apply it, the config change was based on outdated docs, the app now cannot start at all, and you have added twenty minutes to the incident. Meanwhile the real fix was a rollback nobody suggested because everyone was busy iterating on the AI response.
+
+**What to do instead:** during an incident, follow a written runbook, do the minimum reversible action (usually rollback), and reason from first principles. AI has a place in *postmortems* (reconstructing the timeline, suggesting monitoring improvements, writing communications), never in the live loop.
+
+## The Common Pattern
+
+Every one of these tasks fails for the same underlying reason: **the task requires holding invariants that AI cannot see, and producing a plausible answer without holding them is worse than producing no answer at all.**
+
+The corollary is where AI actually helps: tasks where the invariants are visible in the immediate context, the failure modes are cheap, and the answer can be verified quickly. Writing a CRUD form. Generating a JSON schema. Translating between two well-understood formats. Explaining a concept you have not encountered before, so you can then go verify it. These are the honest wins.
+
+The wins are real. The seven tasks above are also real. Confusing the two categories is the actual danger, because the failures do not look like failures. They look like normal code that was slightly wrong in a way you did not check.
+
+## The One-Line Test
+
+Before you accept an AI suggestion, ask: **would I ship this if I did not know an AI produced it?**
+
+If the answer is "no, I would want to think about it longer," think about it longer. The fact that AI produced it does not make it more trustworthy. If anything, it makes it *less* trustworthy, because you were about to skip a step you would have taken if a human had proposed the same code.
+
+That single question, asked honestly, would prevent most of the incidents your team is going to have in the next twelve months. Whether you ask it is up to you. Whether the incident happens anyway is not.

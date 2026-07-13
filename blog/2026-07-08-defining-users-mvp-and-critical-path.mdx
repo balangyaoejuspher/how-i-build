@@ -1,0 +1,137 @@
+---
+title: "How I Build: Defining the User, the MVP, and the Critical Path Before Writing Code"
+authors: [balangyaoejuspher]
+tags: [architecture, planning, mvp]
+date: 2026-07-08
+slug: /defining-users-mvp-and-critical-path
+---
+
+Most engineering conversations start in the wrong place. Someone opens a laptop, someone else asks "what stack should we use?", and forty-five minutes later there is a diagram with three databases, two message queues, and zero written statements about who this thing is for.
+
+Before you pick a stack, before you pick a topology, before you draw a single box, you owe three answers in writing:
+
+1. **Who is the user?** Not "everyone." A specific person with a specific job.
+2. **What is the critical path?** The one flow that must never break, because if it does the business dies.
+3. **What is out of scope for v1?** Not what is in. What is explicitly *out*, and why.
+
+If you cannot answer all three in a paragraph each, you are not ready to design. You are ready to think.
+
+{/* truncate */}
+
+## Section 1: Define the User in One Paragraph
+
+"Everyone" is not a user. Neither is "small businesses," "developers," or "people who buy things online." Those are demographics. Users are people with jobs to do.
+
+A useful user definition names one persona with three properties:
+
+- **Who they are** in enough detail that you could imagine them at a coffee shop.
+- **What job they are hiring your product to do**, in their words, not yours.
+- **What they use today**, and what specifically breaks about that existing option.
+
+Compare these two definitions of the same imagined user for an invoicing tool:
+
+**Weak:**
+
+> Small business owners who need to send invoices.
+
+**Strong:**
+
+> A solo consultant billing three to five clients per month. Today she uses a Word template and emails PDFs manually. She loses about two hours a month reconciling which invoices were paid, because payment confirmations arrive in a personal inbox mixed with everything else. She is not willing to learn accounting software. She is willing to pay $15/month if the tool sends the invoice and tells her when it was paid.
+
+The strong version is a design constraint. It tells you the feature set (send, track, notify), the tolerable complexity (very low, no accounting jargon), the pricing anchor ($15/month), and even the failure mode you must not create (adding another inbox to check).
+
+If you cannot write the strong version, you are guessing. Guesses become features. Features become code. Code becomes the thing you have to maintain forever.
+
+## Section 2: Identify the Critical Path
+
+Every product has a single flow that is the reason it exists. Every other flow supports that one, or should be cut.
+
+For the invoicing consultant above, the critical path is:
+
+> Create an invoice → send it to the client → mark it paid when payment arrives.
+
+That is it. Not a dashboard. Not multi-currency. Not team collaboration. Not a mobile app. Those may exist eventually; none of them are the reason anyone would use the product.
+
+The critical path has three properties, and you should write them down before designing anything else:
+
+- **It is the flow that produces the value the user pays for.** If it works, the product is worth money. If it fails, the product is worthless.
+- **It has a defined failure blast radius.** "If the invoice does not send, the consultant sends manually today, so we lose brand loyalty but not money." "If we mark an invoice paid when it wasn't, the consultant looks unprofessional to the client, which is worse than missed payment tracking." Naming the blast radius decides which failures are acceptable and which are existential.
+- **It gets your best engineering attention.** Everything else can be flaky at v1. The critical path cannot.
+
+This is the same discipline as identifying a workload profile. You are just doing it at the product layer instead of the data layer.
+
+## Section 3: Compare Scope Strategies Honestly
+
+There are three common approaches to defining v1. They produce dramatically different outcomes. Pick one deliberately.
+
+| Dimension                | Full-Scope-First                                              | MVP-First                                                        | Critical-Path-First (Walking Skeleton)                            |
+| ------------------------ | ------------------------------------------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------- |
+| What you ship first      | Every feature the roadmap named, in polished form.            | The smallest thing that proves the core hypothesis.              | The whole critical path end-to-end, feature-thin at every step.   |
+| Time to first real user  | Months. Often quarters.                                       | Weeks.                                                           | Days to a couple of weeks.                                        |
+| Learning cycles per month | Near zero until launch. Then a firehose of surprises.        | One or two, focused on the core assumption.                      | Many. Every real user teaches you something along the whole flow. |
+| Sunk-cost risk on pivot  | High. Most of what you built is now wrong.                    | Low-to-medium. You built one thing; you can rebuild it.           | Low. You built a spine. Muscle can be added anywhere.             |
+| Refactor cost after learning | High. Whole modules get thrown out.                       | Medium. You built for the hypothesis, not for the answer.        | Low. The skeleton was always designed to grow.                    |
+| Team morale under uncertainty | Bad. No signal of value for months.                     | Good early, tense as MVP hits limits.                            | Good throughout. Every week produces a demoable improvement.      |
+| When it is the right call | You have real signed contracts and full requirements up front. | You have one clear hypothesis and need to validate it fast.      | You are building for a domain where the shape of the flow matters more than any single feature. |
+
+The strategy I default to for anything user-facing without a signed contract is **Critical-Path-First**. You ship a version of the entire flow, even if each step is embarrassingly simple, and then thicken the parts that matter based on what real users hit.
+
+The strategy I *never* default to is Full-Scope-First. It works when the requirements are legally fixed (regulated industries, enterprise migrations). It fails when a team convinces itself it knows what users want without having asked one.
+
+## Section 4: The MVP Decision Matrix
+
+Once you know the critical path, every proposed v1 feature has to answer one question: **does this test the core hypothesis?**
+
+If yes, it is in scope.
+If no, it is out of scope for v1, no matter how easy it looks or how nice it would be.
+
+The decision matrix I run every candidate feature through:
+
+| Question about the feature                                         | If "no," what it means                                       |
+| ------------------------------------------------------------------ | ------------------------------------------------------------ |
+| Does the critical path depend on it working?                       | Not v1. Log it for later.                                     |
+| Does it change the user's answer to "is this worth paying for?"    | Not v1. Cosmetic or trust-building work, valuable but later. |
+| Does its absence make the critical path measurably worse?          | Not v1. The user can live without it while we learn.          |
+| Does it cost less than a day of engineering to include?            | Reconsider. Cheap features are the classic scope-creep trap. |
+| Does removing it later cost more than adding it later?             | If "yes," in scope. Sunk-cost baked-in decisions are worst.  |
+
+The last row is the one most teams get wrong. Features are easy to add. Features are catastrophic to remove. If you can defer the decision, defer it. Every deferred feature is a decision you get to make later with more information.
+
+## Section 5: The Walking Skeleton Pattern
+
+A walking skeleton is a working version of the entire critical path, with every step implemented at the lowest possible fidelity that still counts as end-to-end.
+
+For the invoicing example:
+
+- **Create invoice:** A form with three fields. No PDF generation yet. Store as JSON.
+- **Send invoice:** An email with the invoice details in plain text. No branded template.
+- **Mark paid:** A button in the app. The user clicks it manually. No integrations.
+
+That skeleton is *unusable as a product*, but it is testable end-to-end. Real users can walk the whole flow. Every friction point they hit tells you which muscle to add first.
+
+Contrast this with the "vertical slice" pattern, which ships one feature at full fidelity and adds another later. Vertical slicing is fine when the feature list is well understood. On a new product with an unproven hypothesis, walking skeleton wins because the learning is about the *shape of the flow*, not the depth of any one step.
+
+The rule I use: **the skeleton must exist before any part of it becomes elegant.** If you find yourself polishing a PDF template while the "mark paid" flow is still a hardcoded button, you have inverted the priorities.
+
+## The Prompt That Kills Feature Wishlists
+
+Ask AI "what features should my invoicing tool have?" and you get a catalog of every feature every invoicing tool has ever had. Ship the catalog and you ship for two years, running out of runway to reach a user who wanted three of them.
+
+Use this instead:
+
+> **Role:** Product-minded engineer scoping an MVP.
+> **Context:** Target user: [one-paragraph persona from Section 1]. Critical path: [one-sentence flow]. Failure blast radius for the critical path: [what happens if it breaks]. Team size: [X]. Time budget to first real user: [Y weeks].
+> **Task:** Propose the smallest walking skeleton that lets a real user complete the critical path end-to-end. For each step, name the lowest-fidelity implementation that still counts as end-to-end.
+> **Constraint:** For every feature you propose, also name what you are *deferring* and why. If you cannot defer any feature, the scope is too big.
+
+The deferral list is doing the work. A prompt that only asks what to include produces a wishlist. A prompt that demands what to defer produces a plan.
+
+## Write These Three Paragraphs Before You Write Any Code
+
+1. **The user**, specifically enough that you could describe their kitchen.
+2. **The critical path**, in one sentence.
+3. **The out-of-scope list for v1**, longer than the in-scope list.
+
+Miss any of the three and you do not have a scope. You have a vibe. Vibes are how features nobody asked for end up in production, being maintained by an engineer who no longer remembers why they exist.
+
+Ship the smallest thing that walks. Let the walking tell you what to build next.

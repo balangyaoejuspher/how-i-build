@@ -1,0 +1,100 @@
+---
+title: "How I Build: The Junior Trap and the Senior Trap, How AI Damages Different Careers Differently"
+authors: [balangyaoejuspher]
+tags: [ai, standards, planning]
+date: 2026-06-28
+slug: /junior-trap-senior-trap
+---
+
+The industry conversation about AI-assisted development has one shape: "is it good for developers or bad for developers?" Wrong question. It is good for some, bad for others, and *catastrophically* bad in specific ways at specific seniorities. Ignoring that produces two failure modes, one at each end of the career ladder, that will define the next five years of hiring, promotions, and postmortems.
+
+This post names both traps directly. Neither is comfortable reading. Both are avoidable.
+
+{/* truncate */}
+
+## The Junior Trap: Shipping Without Understanding
+
+A junior engineer's job is not to ship code. It is to become an engineer. The code is the byproduct of learning to read code, debug code, reason about systems, and hold context under uncertainty. Skip the learning, keep the code, and you have a person with a paycheck and a title who cannot do the work behind either.
+
+AI accelerates this failure mode by making it invisible.
+
+Six specific skills a junior fails to build when they lean on AI wrong:
+
+**Reading unfamiliar code.** The single hardest skill in this industry. You open a file you have never seen, in a codebase you did not write, in a language you use at 60% fluency, and you have to figure out what it does. Every senior can do this. Most cannot articulate how. It is a slow-built pattern-recognition skill that takes years. Juniors who ask AI "what does this code do?" instead of reading it never build the pattern-recognition muscle. In an interview or a new job, they cannot function.
+
+**Debugging without knowing the answer.** Real debugging starts when you have no theory. You reproduce, you observe, you form a hypothesis, you test it, it fails, you form another. It is slow and it is uncomfortable and it is where all real engineering skill comes from. Juniors who paste stack traces into AI and accept the first plausible fix skip this entirely. They stop being able to work through a bug they cannot Google, which means most bugs.
+
+**Building intuition for what "good" code looks like.** The taste for good code comes from writing a lot of medium code, seeing it break in production, and internalizing why. If your first year of "writing code" is actually "editing AI-suggested code you did not fully understand," you have no calibration. You will accept bad suggestions as easily as good ones because you have no baseline to compare against.
+
+**Holding context across a codebase.** Real work requires holding six or eight different concerns in your head simultaneously: the API you are changing, the callers you might break, the tests that will run, the data migrations, the feature flags, the release train. Juniors who use AI as a per-file assistant build the muscle for one file at a time. When they get promoted to work spanning multiple services, they do not have the working memory.
+
+**Talking about their own code.** In technical interviews, in design reviews, in postmortems, engineers are asked to explain what their code does and why. Juniors who did not write their code cannot answer. This is not an interview trick. It is a life-of-the-work skill. If you cannot explain what you shipped, you cannot debug it under stress, cannot review a peer's version of it, and cannot mentor anyone through it.
+
+**Confidence calibration.** Good engineers know how confident they should be about a claim. Junior engineers relying on AI develop the opposite skill: they become confident in outputs they have not earned. This gets caught, eventually, by a senior in review or by a system in production. But the correction is much more painful than if the calibration had built naturally.
+
+The blast radius of the junior trap is a person, not a system. It is a career that stalls at year three because the person is technically employed as a mid-level but skills-wise still a junior. Companies fire them; they get another job on the strength of their résumé; the cycle continues until an interview process catches them, or a production incident with their name on it does.
+
+## The Senior Trap: Skipping the Boring Code
+
+A senior engineer's job is different. They are expected to design systems, unblock teams, own outcomes, and set the standard for what "good" looks like. The temptation with AI is to delegate the parts that feel below their pay grade: the boilerplate handler, the utility function, the CRUD form. That temptation is the trap.
+
+Six things a senior quietly loses when they lean on AI for the boring parts:
+
+**Intuition for what a good API surface feels like.** You develop taste for API design by writing a lot of APIs and living with the ones you designed badly. Delegate that to a model and you stop noticing when the AI-generated interface is subtly wrong: too many parameters, badly named, encoding two concepts in one, awkward to test. You will approve worse APIs than you would have written, because approving is a different cognitive act from creating.
+
+**The mental model of your own codebase.** Seniors are the walking documentation. They know where things live, how modules relate, what invariants matter. That knowledge is refreshed every time you write code inside the codebase, not by reading it. Skip the writing for six months and your mental model is now six months out of date. When someone asks you a question about the architecture, you will confidently give an answer that was true last year.
+
+**Sharp code-review instincts.** Reviewing well requires the reviewer to know what "well" looks like, which requires the reviewer to still write it themselves. Seniors who stop writing tricky code stop having the reflex that catches subtly wrong code in review. They start rubber-stamping "looks reasonable" PRs, which is exactly how the incidents in the previous post happen.
+
+**Debugging under pressure.** When a real incident hits, the senior is the one who reasons through it fastest, because they have the deepest recent code in their head. Seniors who delegate the boring code have shallow recent context. In an incident, they know the *architecture* but not the *code that is actually running*, and the gap between those two is where every long incident lives.
+
+**The ability to mentor with specifics.** Mentoring juniors requires the mentor to have recently done the thing they are teaching. Seniors who have not written boilerplate code in six months lose the ability to mentor juniors through writing boilerplate code. They give architectural advice when the junior needs practical advice, and the junior stalls.
+
+**Trust from the team.** This one takes longest to notice. When the team can see that the senior has been coasting on AI-generated PRs, the perceived authority of the senior's design opinions erodes. The senior can still design, but the team gives their designs less weight, because they no longer see the senior doing the actual work.
+
+The blast radius of the senior trap is a team, not a person. A senior who stops writing loses the standing to set standards, which means standards drop, which means juniors on the team develop worse habits, which means the whole team's ceiling drops. It is slow, invisible, and severe.
+
+## The Traps Side by Side
+
+| Dimension                          | Junior Trap                                                     | Senior Trap                                                       |
+| ---------------------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------- |
+| What gets skipped                  | Learning to read, debug, and reason.                             | Writing the boring code that keeps skills sharp.                   |
+| Symptom in a code review           | Cannot explain their own PR under questioning.                   | Approves "looks reasonable" without spotting subtle bugs.          |
+| Symptom in an interview            | Freezes on any question that goes below the surface.             | Talks in architecture patterns; cannot demo a 30-line function.    |
+| Symptom in an incident             | Loses the debugging thread within 15 minutes.                    | Knows the architecture but not the code running in production.    |
+| Symptom in mentorship              | Nothing to mentor with.                                          | Advice sounds outdated to the juniors receiving it.                |
+| Timescale to become visible        | Six months to two years.                                         | One to three years.                                                |
+| Blast radius                       | The individual's career.                                         | The team's technical ceiling.                                      |
+| What the market signals             | Résumés with three "senior" titles by year five, thin technical answers behind each. | Managers who cannot pass their own team's coding bar anymore.      |
+
+Notice the pattern: **both traps compound because they are invisible until they are catastrophic.** Nobody is going to tell the junior they are not learning. Nobody is going to tell the senior their reviews have gone soft. The feedback loop takes years, and by the time it arrives the damage is done.
+
+## What Each Should Actually Do
+
+**For juniors:**
+
+- **Type the AI's answer into a comment, then write the code yourself.** Read the AI's suggestion. Understand it. Then close the tab and write the code from your own understanding. This is the single highest-leverage habit for a junior using AI, and almost nobody does it.
+- **Write the test before the code.** Not test-driven-development religion. A simple rule: if you know what the code should do, you can write the test for it. If you cannot write the test, you do not understand the requirement well enough to accept AI code that claims to solve it.
+- **Debug three unfamiliar things per week without AI.** Cold-read a random file. Trace a request through the codebase. Fix a bug in a service you do not own. This is the muscle. It only grows if you use it.
+- **Explain your PRs verbally to a peer before you request review.** If you cannot walk through what your code does line by line, you should not have opened the PR.
+- **Read the code your seniors write.** Not review it; read it. Read old PRs, read pull requests in open source, read the source of your framework. This is how you learn what good code looks like, and no AI conversation is a substitute for it.
+
+**For seniors:**
+
+- **Write the tricky parts by hand.** Do not delegate the interesting problems to AI. Delegate the CRUD form. Keep the state machine, the concurrent code, the domain model, the error handling. Those are where your judgment matters most and where the skill decay hurts the team most.
+- **Refuse to review PRs you cannot explain back to the author.** If you cannot articulate what a diff does after reading it, you are not equipped to approve it. Ask the author to walk you through it, or block until you can walk yourself through it.
+- **Read the AI-generated code your team ships with fresh eyes.** Once a week, pick a merged PR with heavy AI assistance and re-read it as if you were about to inherit it. This is how you catch drift in your own team's quality before an incident does.
+- **Do one small greenfield project per quarter, solo, with AI turned off.** Whatever it is. A CLI, a game, a script. The point is to stay in touch with the physical act of writing code from nothing, because that is the skill your team pays you to still have.
+- **Mentor by reviewing, not by pairing with AI.** When a junior asks for help, do not open the model. Read their code, ask them to walk through it, and coach the reasoning. Pairing with a model teaches them to pair with a model. Pairing with you teaches them to think.
+
+## The Common Rule
+
+Both traps have the same underlying cause: **AI removed the friction from a step in which the friction was the point.**
+
+Junior work is supposed to be slow because slow is how the pattern-recognition builds. Senior work is supposed to be varied because variety is how the intuition stays sharp. Remove the friction and you also remove the growth. That is a decade-long problem you cannot fix in the year you finally notice it.
+
+Use AI. Do not let it use you. The specific way it uses you depends on where you are in your career, and both versions end with a person who is technically employed but no longer growing.
+
+The good news, if you can call it that, is that anyone reading this article can pick the antidote for their own trap this week. Nothing on those two lists is expensive. All of it is just deliberate work, done for its own sake, in an era where the tools would rather do the work for you.
+
+Do the work anyway. It is the only thing that pays out in five years.

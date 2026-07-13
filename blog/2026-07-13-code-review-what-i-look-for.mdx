@@ -1,0 +1,154 @@
+---
+title: "How I Build: What I Actually Look for in a Code Review"
+authors: [balangyaoejuspher]
+tags: [standards, planning]
+date: 2026-07-13
+slug: /code-review-what-i-look-for
+---
+
+Most code reviews are theatre. Someone scrolls the diff, drops two nits about variable names, hits approve, and moves on. The reviewer feels productive. The author feels validated. The codebase gets slightly worse.
+
+Real code review is a different thing. It is a specific list of questions a reviewer asks, in a specific order, and the review is done when all of them have an answer. If you cannot answer them, you do not approve. If you approve without answering them, you are not reviewing.
+
+This post is that list. It is the actual sequence I run through every time I open a PR. It works for human-written code and it works for AI-assisted code, though the ratios shift.
+
+{/* truncate */}
+
+## What Review Is For
+
+Review is not for finding bugs. Tests do that. Type systems do that. Linters do that.
+
+Review is for the things automation cannot check:
+
+- **Does this fit the codebase.** A working function that ignores every convention is a maintenance grenade.
+- **Is the design defensible.** Not "optimal," defensible. Can the author articulate why they chose this shape.
+- **Will the next person be able to maintain it.** The next person is you in six months. Design for that stranger.
+- **Does it uphold the invariants tooling cannot enforce.** Business rules, security boundaries, cross-cutting patterns that live in convention rather than code.
+- **Does it introduce new dependencies, new patterns, new abstractions that the team should collectively agree on.** Anything that changes the shape of the codebase, not just its content.
+
+If your review process only asks "does this look right," you are running spellcheck, not review.
+
+## The Reviewer's Checklist
+
+The specific questions I answer for every PR, in this order. If any answer is "no" or "unclear," the PR is blocked, not commented.
+
+### Design and Fit
+
+- **Does this solve the stated problem in the PR description, or did the scope creep?** Scope creep is the top-of-file bug in most PRs. A PR that "adds pagination" and also refactors three unrelated helpers is two PRs pretending to be one.
+- **Is the design defensible in one sentence?** If the author cannot explain why they wrote it this way, they do not yet know why they wrote it this way. Ask them to write the reason in the PR description.
+- **Does the code sit at the right layer?** Business logic in the delivery layer, database queries in the domain layer, framework code sprayed through the app. These are all "fits the codebase" failures. The tests pass. The design is broken.
+- **Are new abstractions justified?** Abstractions extracted on first use are almost always wrong. See the Rule of Three.
+
+### Naming
+
+- **Do names describe what the thing is, not how it works?** `getUserById` is fine. `fetchDataAsync` is a red flag. `handleThing` is a rejection.
+- **Do booleans read as predicates?** `is_active`, `has_shipped`. Not `active` (adjective vs noun ambiguity), not `is_inactive` (negatives always ship as bugs).
+- **Are the names consistent with the rest of the codebase?** Not "close to" consistent. Actually consistent.
+
+### Error Handling
+
+- **What happens on every error path in this diff?** Silently swallowed. Logged and returned null. Thrown to a caller that will not catch. There should be one answer per path, and the author should be able to name it.
+- **Are user-facing errors distinguishable from internal ones?** If your API returns "internal server error" for a validation failure, your users cannot help you debug.
+- **Are external calls wrapped in the right retry / timeout / circuit-breaker layer?** External call without a timeout is a bug that only shows up on incident day.
+
+### Test Quality
+
+Not test presence. Test *quality*.
+
+- **Does each test assert a specific requirement, or does it just exercise the code?** A test that runs 50 lines of code and asserts one boolean is exercising, not asserting.
+- **Do the tests test behavior, or implementation details?** Tests that break when the implementation changes but the behavior is preserved are actively harmful.
+- **Is there a test for the edge case the diff introduces?** New nullable field, new async path, new branch in a conditional. Every one of them deserves an explicit test.
+- **Is there a test for the invariant the code is supposed to preserve?** Not "does the function return the right value for this input." "Does the invariant still hold across all cases the function might encounter." Different question.
+- **Did the author write the test, or did the model?** AI-generated tests validate that the code does what the code does. Human-written tests validate that the code does what the requirement demands. Different things.
+
+### Invariants and Cross-Cutting Concerns
+
+- **Does this change touch any of the codebase's known invariants?** Auth wrapping, audit logging, multi-tenant scoping, feature flags. If yes, is each invariant still preserved. Grep the diff for the specific patterns.
+- **Are there any places where the diff bypasses the standard path?** Direct database access instead of going through the repository layer. Direct HTTP call instead of going through the typed client. Direct log statement instead of the structured logger. Each bypass has to be justified.
+
+### Dependencies
+
+- **Are any dependencies added?** If yes, run the checklist from the [tech-stack post](/tech-stack-evaluation): actively maintained, non-trivial functionality, no CVEs, acceptable bundle size. New dependencies deserve their own PR conversation, not a hidden line in a feature diff.
+- **Are any versions bumped?** Even patch versions can ship breaking behavior. Bumps get their own justification.
+
+### Security
+
+- **Does this diff touch anything security-critical?** Auth, session handling, crypto, secret handling, user input parsing. If yes, the review is different. Slower. More paranoid.
+- **Are inputs validated at the trust boundary?** Not "somewhere," at the boundary where trusted becomes untrusted.
+- **Are secrets kept out of logs?** Structured logger only. Never `console.log(user)`.
+
+### AI Usage Disclosure
+
+- **Was any part of this AI-assisted?** Not for shaming, for triage. If the PR is heavily AI-assisted, the review shifts to "explain every non-obvious line, and I want a human-authored test for the specific behavior."
+- **If yes, did the author actually read every line?** Ask them to walk through it. If they cannot, block until they can.
+
+## Block vs Comment vs Nit
+
+Not every finding warrants blocking merge. Sort your feedback ruthlessly.
+
+**Block (do not merge until fixed):**
+
+- Correctness bug
+- Security regression
+- Invariant violation
+- Unjustified new dependency
+- Convention violation the author is not willing to fix
+
+**Comment (fix in this PR or a follow-up, author's call):**
+
+- Better alternative approach
+- Style inconsistency
+- Missing test for a non-critical case
+- Refactor opportunity
+
+**Nit (author may ignore):**
+
+- Variable naming preference
+- Comment wording
+- Formatting the linter did not catch
+
+If everything is a block, you are gatekeeping. If nothing is, you are rubber-stamping. Learn the ratio for your codebase.
+
+## How to Give Feedback Without Killing Morale
+
+Reviews land on humans. The specific words matter more than the specific finding.
+
+- **Praise specific things, not the author.** "The way you named this state machine is really clear" is useful. "Great job" is noise.
+- **Frame changes as "consider" not "wrong."** "Consider extracting this into a helper because X" invites discussion. "This is wrong, extract it" ends the conversation and produces resentment.
+- **Explain the reasoning behind blocks.** "Blocking on X because it violates our invariant Y (see file Z)." Not "no." Reviews that block without reasoning teach nothing.
+- **Separate style from substance.** Style comments prefixed with `nit:`. Substance comments not prefixed with anything. Reviewers who bury blocks among nits produce authors who ignore all comments equally.
+- **Sit on the "just fix it and merge" reflex.** If you find yourself typing more code than the author, either the review is too big or you are doing the author's growth for them. Both are bad.
+
+## When the Review Should Not Happen
+
+Some PRs should be rejected outright, before the diff is even read carefully.
+
+- **PR with no description.** The description is where the author explains why. Without it, review is guessing.
+- **PR that touches more than one concern.** "Adds pagination and refactors auth." Ask for it to be split.
+- **PR that lands on a Friday afternoon and has to ship before Monday.** Push back. Rushed reviews are the source of half the incidents this blog documents.
+- **PR from a new hire on a critical-path service in week one.** Pair on it instead. That is mentoring, not gatekeeping.
+
+## The Reviewer's Prompt
+
+If you use AI as a review assistant, use it for the boring parts, not the judgment.
+
+**Weak prompt (produces a summary):**
+
+> Review this PR for me.
+
+**Structured prompt (produces a first pass, not a decision):**
+
+> **Role:** Senior code reviewer.
+> **Context:** This is a diff in a [Language/Framework] codebase with the following conventions: [System DNA reference or short excerpt]. The PR description says: [pasted].
+> **Task:** Perform a first-pass review answering these questions in order: (1) any correctness bugs you can spot statically, (2) any deviations from the stated conventions, (3) any unjustified new dependencies, (4) any missing tests for edge cases the diff introduces. For each finding, quote the specific line and explain the concern.
+> **Constraint:** Do not comment on style. Do not summarize the diff. Do not decide whether to approve. Findings only, evidence attached.
+
+That gives you a first pass to react to. The approval decision, and every judgment call above the level of "does the syntax parse," still belongs to a human. If your reviewer is an AI, your codebase is being reviewed by whoever wrote the training data.
+
+## The Habit Worth Building
+
+Review is a skill. It grows the same way debugging does: reps, deliberate practice, and post-facto reflection on the reviews you got wrong.
+
+The one habit that separates reviewers who catch things from reviewers who miss things: **when you finish a review, ask what invariant you did not check.** Not "did I check enough." "What did I not check." That question, asked honestly, is where the review skill grows.
+
+The review is done when you can defend the approval in a postmortem. Until then, keep reading.

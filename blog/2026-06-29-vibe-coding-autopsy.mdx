@@ -1,0 +1,116 @@
+---
+title: "How I Build: Vibe Coding, Autopsy of an Incident That Should Not Have Happened"
+authors: [balangyaoejuspher]
+tags: [architecture, ai, resiliency]
+date: 2026-06-29
+slug: /vibe-coding-autopsy
+---
+
+Every team using AI-assisted coding will eventually ship the incident described below. Not one like it. Actually it. The details vary, the root cause never does: a developer prompted, the model produced plausible code, nobody read it line by line, the happy path passed, it merged, and it caused customer harm in a way no test caught because no human ever formed a mental model of what the code did.
+
+This post is a postmortem of that class of incident. The company is composite. The failure mode is not.
+
+{/* truncate */}
+
+## Incident Summary
+
+- **Service:** ticketing platform, seat-reservation flow
+- **Impact:** approximately 12% of "sold out" events between 14:00 and 22:00 UTC on a Friday had 3 to 40 seats that were actually available. Estimated lost bookings: ~800. Estimated lost revenue: mid five figures.
+- **Detection:** three customer support tickets over four hours saying "I bought seats in this section last week and now the whole section is sold out." Not by monitoring.
+- **Duration:** 6 hours from merge to rollback. 47 minutes from first ticket to acknowledgement.
+- **Root cause:** an AI-assisted `checkAvailability` query that did not match the codebase's convention for expired reservations. The query used `WHERE released_at IS NULL`; the codebase uses `WHERE released_at IS NULL OR released_at > NOW()`. Expired-but-not-purged reservations were counted as active, marking seats unavailable.
+
+## Timeline
+
+**Tuesday, 10:14 UTC.** A mid-level engineer picks up a ticket to add support for "premium seat holds," which requires a small refactor of the reservation availability logic. The existing logic lives in `reservation-service/src/queries/availability.ts`.
+
+**Tuesday, 10:22.** The engineer opens their AI assistant and types: *"I need to refactor this availability check to also exclude premium holds. Here is the current function."* Pastes the function. The AI proposes a rewrite that unifies the "regular reservation" and "premium hold" cases into a single query.
+
+**Tuesday, 10:25.** The engineer reads the proposed code. It looks reasonable. It uses TypeScript, it uses the same query builder the codebase uses, and it passes the existing test suite when they paste it in. They commit and push.
+
+**Tuesday, 10:31.** The PR opens. The reviewer is a senior on another team, filling in because the usual reviewer is on vacation. The diff is 47 lines: a new query, a new unit test (also AI-assisted), and a small type refactor. The reviewer scans it in 4 minutes and approves.
+
+**Tuesday, 10:47.** PR merges to main. Deploys to production 12 minutes later via the standard pipeline. All existing tests pass. Coverage stays above the 80% threshold.
+
+**Friday, 14:00.** A large concert on-sale event begins. Reservation volume ramps to about 60 per second across all events. The bug is now live under load.
+
+The bug: when a customer starts checkout but does not complete, the reservation row is soft-deleted with `released_at = NOW() + 15 minutes` (a 15-minute reserve window). If they complete, `released_at` is set to `NULL` and the reservation becomes permanent. The old query correctly excluded these two states from "available." The new AI-generated query excluded only rows with `released_at IS NULL`. Expired rows (where `released_at > NOW()` was false, meaning already past their window but not yet garbage-collected) were treated as *still-active* reservations.
+
+**Friday, 17:23.** First customer support ticket: "I bought two seats in section 104 last Tuesday and section 104 is showing sold out. What is happening?"
+
+**Friday, 17:41.** Second ticket. Support agent replies with the standard "check the venue map, some sections have separate on-sale times" template.
+
+**Friday, 19:12.** Third ticket, this one from a season-ticket holder with 40 seats she manages. She includes a screenshot and a receipt from Tuesday. Support escalates.
+
+**Friday, 19:59.** On-call engineer acknowledges. Opens the reservation table for that venue, runs a query, sees expired-but-not-purged reservations counted as active.
+
+**Friday, 20:17.** On-call engineer checks recent merges to `reservation-service`. Finds Tuesday's PR.
+
+**Friday, 20:23.** Rollback initiated. Old artifact redeployed. Bug stops as of 20:26.
+
+**Friday, 20:45.** Team writes an emergency script to identify affected events. Notifies affected customers by email starting 22:00, offering priority access for the next similar on-sale.
+
+**Following Monday.** Postmortem meeting.
+
+## The 5-Why Root Cause
+
+**Why did the incident happen?** The availability query returned incorrect results, marking seats unavailable that were actually free.
+
+**Why did the query return incorrect results?** It did not follow the codebase's convention for expired reservations. The codebase uses `released_at IS NULL OR released_at > NOW()`. The new query used only `released_at IS NULL`.
+
+**Why did the query not follow the convention?** It was generated by an AI assistant that did not know the convention. The convention exists only in the query it replaced. There is no doc, no glossary, no schema comment describing what `released_at` semantically means.
+
+**Why did nobody catch the deviation?** The developer read the code and thought it looked correct. The reviewer scanned the diff. The tests passed. Neither the developer nor the reviewer formed a mental model of what "an expired reservation" means at query time.
+
+**Why did the tests pass?** Because the test suite tested the happy path (a fresh reservation, marked reserved, marked complete) and the AI generated tests in that same shape. There was no test for "an expired reservation still in the table but past its `released_at` timestamp." That state existed only in production data.
+
+## What Failed, Specifically
+
+Six things had to line up for this bug to reach customers. Removing any one would have stopped it.
+
+1. **The convention was undocumented.** `released_at` had semantic meaning ("in the future = still an active hold; in the past = expired") that lived only in the query. Nothing in the schema, no comment, no glossary.
+2. **The AI assistant was not given codebase context.** The developer pasted the function to refactor but not the surrounding conventions or the schema notes. The AI worked with what it had, which was insufficient.
+3. **The developer read for plausibility, not for correctness.** "Looks reasonable" is not a review. Every line of that query encoded an assumption. The developer accepted them all without verifying any.
+4. **The AI generated the tests.** A model that generated the code cannot be trusted to write the tests that validate the code. It happily wrote tests that pass the code it just wrote, missing the entire class of failure that would have caught the bug.
+5. **The reviewer skimmed.** Four minutes on 47 lines is not review. It is signoff. The reviewer had no ownership of the domain and no reason to challenge the query semantics.
+6. **Monitoring did not include business invariants.** The system reported "reservation service healthy" throughout the incident. There was no alert on "availability results deviate from expected inventory by more than X%." The only signal was customer complaints.
+
+Each of these is a normal, boring engineering shortcut. Combined and enabled by AI-generated code, they produce silent customer harm.
+
+## What Would Have Caught It
+
+The following changes, applied to the same team writing the same code with the same AI assistant, would have caught this bug before it merged:
+
+- **A convention doc in the repo.** A single markdown file at `reservation-service/CONVENTIONS.md` that documents `released_at` semantics, tenant scoping, and any other business invariant not obvious from the schema. Loaded into every AI prompt in that service via the assistant's context configuration. This is one file. Every team should have one.
+- **A PR template question.** "What AI assistance was used in this PR, and what specific parts did you re-verify against the codebase's conventions?" Not a checkbox. A text field the author must fill out. It reframes review from "does this look reasonable" to "did the author actually think about the assumptions."
+- **A human-authored test.** Not "please write tests for this." A test written by the developer, in their own words, exercising the specific case they cared about: "an expired-but-not-purged reservation must not be counted as active." One test. Would have caught it.
+- **A business-invariant monitor.** An alert that fires when the ratio of "sold out" events to "events with any reservations active" moves by more than one standard deviation from baseline. This is a fifteen-line query and a Grafana alert. It would have caught the bug within an hour, not four.
+- **A stricter review policy for query changes.** Any PR that touches a query in `reservation-service` requires review from a member of the reservation-service team, not a fill-in senior on another team. This is a `CODEOWNERS` change. Five minutes.
+
+None of these are exotic. Every one of them is an hour of work. The team was one hour of preparation away from not shipping this incident.
+
+## The Structural Change
+
+The postmortem produced three permanent changes that outlast the individual fix.
+
+**Convention docs are now a required artifact per service.** Every service has a `CONVENTIONS.md` at its root describing schema semantics, naming rules, and any business invariants that are not obvious from the code. New services cannot deploy without one. Existing services got theirs backfilled over a two-week sprint.
+
+**PR templates now include an AI-usage disclosure.** Not for shaming. For triage. When something breaks, the postmortem starts by looking at PRs where the disclosure was thin. This has quietly changed reviewer behavior: reviewers now ask "which parts of this diff did you re-verify" instead of "does this look right."
+
+**Every query change now requires a business-invariant test.** Not a happy-path test. A test that asserts the invariant the query is supposed to preserve, written by the human author. Query PRs without one are auto-rejected by CI.
+
+Nothing on that list is about AI. Every one of them is about the discipline the team should have had before the AI made it possible to skip.
+
+## What This Autopsy Actually Teaches
+
+Three specific lessons, in decreasing order of comfort:
+
+**Discipline scales exactly as fast as your tooling. If your tooling generates code faster, your discipline must catch bugs faster.** This is not optional. Every team adopting AI without adopting stricter review, stricter tests, and stricter conventions is running an experiment they cannot control.
+
+**"AI-assisted" in a PR is not a scarlet letter. It is a data point.** Teams that hide AI usage lose the only signal that would have let them notice patterns like this one. Teams that disclose it can look at PR outcomes over time and see which parts of the codebase, and which review pairings, produce the incidents.
+
+**Nobody involved in this incident was incompetent.** The developer was mid-level and conscientious. The reviewer was senior. The tests passed. Coverage was fine. The failure was in the *process*, and the process had not been updated to reflect that the tool now writes code faster than a human can review it. Blaming any individual would have prevented the team from fixing the actual problem.
+
+If your team is running AI-assisted development without updates to review process, testing standards, and monitoring, you are running the same experiment. Yours may run for another week or another year. It will end the same way.
+
+The only difference will be the specific query the AI got subtly wrong, and which one of your customers finds it first.

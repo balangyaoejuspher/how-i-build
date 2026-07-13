@@ -1,0 +1,173 @@
+---
+title: "How I Build: What I Look for When I Hire an Engineer, and What Interviews Should Look Like in the AI Era"
+authors: [balangyaoejuspher]
+tags: [standards, planning, ai]
+date: 2026-07-12
+slug: /hiring-engineers-what-i-look-for
+---
+
+Every interview process I have inherited was optimized for the wrong signal. Long algorithm rounds that measure LeetCode-and-Google fluency. Take-home projects that measure the candidate's willingness to spend an unpaid weekend on your problem. System-design rounds where the "right" answer is "Twitter" and the interviewer just checks whether the candidate lists the same three components everyone else lists.
+
+None of this was ever a great process. In the AI era it is malpractice. Every one of those exercises is trivially shortcut by a candidate who opens ChatGPT in another tab, and the interviewer has no way to tell.
+
+This post is what I actually look for, and how I actually test for it. If you are hiring, adopt any of it. If you are interviewing, know what a serious process feels like so you can spot the unserious ones.
+
+{/* truncate */}
+
+## What Actually Predicts Job Performance
+
+Not credentials. Not language mastery. Not years-of-experience arithmetic. Four things, in order of weight:
+
+**1. Can they read unfamiliar code quickly.**
+
+Every real job starts with the candidate opening a file they have never seen, in a codebase they did not write, in a language they use at 60% fluency, and figuring out what it does. If they cannot do this, nothing else matters. If they can, most other skills are teachable.
+
+This is the single most predictive signal I have found. Nobody tests for it directly.
+
+**2. Can they articulate trade-offs.**
+
+Every design decision that matters is a trade-off. Engineers who cannot verbalize the trade-offs are either not seeing them (junior) or hiding them (dangerous). "I picked Postgres because we need ACID and the query patterns are relational and the team already knows it, and the cost is that we cannot scale writes past X without work" is a hire. "I picked Postgres because it is the industry standard" is not.
+
+**3. Can they say "I do not know" and mean it.**
+
+The most dangerous engineer on a team is the one who confidently guesses when they should say "I do not know, let me check." Every incident I have watched turn into a real disaster had a phase where someone said something confident that turned out to be wrong, and nobody around them thought to verify.
+
+I interview for the presence of "I do not know" statements. Not just under direct questioning. Under mild pushback, under a follow-up that goes below their comfort zone. Candidates who never say "I do not know" in an hour are, at best, hiding it well.
+
+**4. Track record of shipping and owning outcomes.**
+
+Not "worked on." Owned. Shipped. Debugged in production. Wrote the postmortem. Ideally, wrote the postmortem for a system that broke and had their name on it.
+
+The specific projects matter less than the shape of the involvement. "I was on the team that built X" is a résumé line. "I owned the migration from X to Y, here is what I got wrong the first time, here is how I fixed it" is a hire.
+
+## Anti-Signals
+
+Things that look like hire signals but are not:
+
+**Résumé buzzword density.** "Kubernetes, Kafka, Terraform, React, GraphQL, gRPC, DynamoDB, ..." the wider the technology list, the shallower the depth in each. Ask about any one of them in detail and the answers thin out.
+
+**Confident vagueness.** Candidates who answer every question with "it depends" and never commit to a position. It always depends. That is not an interview answer. The interview answer is "in this specific case, given these constraints, I would do X because of Y."
+
+**Inability to explain their own past projects.** If they cannot articulate what a project they claim to have built actually does, one of two things is true: they did not really build it, or they built it without ever understanding it. Both are disqualifying.
+
+**Framework fluency without design intuition.** "I know React well" from a candidate who cannot explain when they would not reach for React is a red flag. Tools without judgment about when to use them is the definition of a résumé engineer.
+
+**Cannot say what they would have done differently.** Every real engineer has projects they look back on and cringe at. Candidates who cannot name one, or who name only cosmetic things ("I would have used Prettier from the start"), have either not shipped enough or have not reflected on what they shipped. Neither is a senior signal.
+
+**Answers exclusively in patterns.** Every question gets mapped to a design pattern and then a canned answer to that pattern. Real engineering is idiosyncratic. Candidates who reduce every problem to "well that's the Strategy pattern, so..." are pattern-matching, not thinking.
+
+## The Interview Format That Actually Works Now
+
+The AI era killed traditional coding interviews. What replaces them:
+
+### Pair-Debug in an Unfamiliar Codebase (the strongest single signal I have)
+
+Give the candidate a small real codebase (a repo you fork or a cleaned-up snippet from your own product). Insert a real bug. Ask them to find and fix it, thinking out loud, while you observe.
+
+What this tests:
+- Can they read unfamiliar code quickly.
+- Do they form a hypothesis before touching anything.
+- Can they distinguish signal from noise in error messages and logs.
+- How do they handle being wrong (they will be, at least once).
+- Do they ask clarifying questions or start hacking.
+
+What this cannot be shortcut by AI: the codebase is small enough to fit in a prompt, sure, but the *process* of debugging is what you are watching, not the answer. A candidate who pastes the whole file into an AI and reads back the AI's suggestion produces a very different set of observable behaviors than a candidate who reads the code and reasons.
+
+Time: 45 to 60 minutes. Feedback: within a day.
+
+### Verbal Design Walkthrough with Adversarial Follow-Up
+
+Ask the candidate to design a system you have already thought about at length. Not "design Twitter." Design something specific: "design the seat-reservation flow for a ticketing platform that has to survive a Taylor Swift on-sale event." Constrain it: team of five engineers, single region, one year to first customer.
+
+Let them draw. Let them think out loud. Then start pushing:
+
+- "Why not Kafka."
+- "What breaks first at 10x traffic."
+- "What is the failure mode if your database primary goes down for 90 seconds mid-sale."
+- "How would you migrate this design if the business asked for multi-region next year."
+
+You are not looking for the "right" answer. You are looking for how they handle a follow-up they did not prepare for. Do they defend, do they update, do they say "I did not think about that, let me reason through it."
+
+This one cannot be shortcut because the adversarial follow-up is where the signal lives. AI helps candidates prepare the initial design; nothing helps them survive an interviewer who says "and now assume that database is on fire, what changes."
+
+Time: 45 to 60 minutes. Feedback: within a day.
+
+### Code Review Exercise, AI-Generated Diff
+
+Give the candidate an AI-generated PR against a small codebase. Include specific mistakes: a subtle bug, a convention violation, an unjustified dependency, a missing edge-case test. Ask them to review it as if a peer had submitted it.
+
+What this tests:
+- Can they spot AI-shaped bugs (the "plausible but wrong" category).
+- Do they know what a real code review comment looks like (see the [code review post](/code-review-what-i-look-for)).
+- Can they distinguish style from substance.
+- Do they have opinions about design, not just correctness.
+
+This one is the AI-era test. Candidates who cannot review AI-generated code well are the same candidates who will accept AI-generated code without review at your company. That is not the future you want.
+
+Time: 30 to 45 minutes. Feedback: within a day.
+
+### Talk Through a Past Incident
+
+Ask the candidate to walk through a real production incident they were part of. Not "the worst outage I ever saw" (that is a story). "An incident where you personally were responsible for something that went wrong, what happened, what you did, what you would do differently."
+
+What this tests:
+- Do they have real production experience.
+- Can they reason about failure in structured ways (timeline, root cause, contributing factors).
+- Can they take responsibility without either overclaiming or externalizing.
+- Do they know the difference between "the bug" and "the reason the bug reached production."
+
+If they cannot name an incident, they are either very junior (fine, hire them accordingly) or they have not been close enough to production to have one (be careful).
+
+Time: 20 to 30 minutes. Can be part of a longer round.
+
+## What Does Not Work Anymore
+
+Adjust or remove these:
+
+- **Take-home coding exercises.** Candidates use AI. You cannot tell how much. Signal is zero.
+- **Timed LeetCode.** Same problem. Also, this was never a strong signal for anything except "candidate has practiced LeetCode."
+- **"Design Twitter" style system design.** Every candidate has seen this answered on YouTube. Design something specific to your domain instead.
+- **Trivia questions.** "What is the difference between var and let." AI answers this in half a second. So does Google. Stop testing memorization.
+- **Whiteboard algorithms.** Dying anyway. Kill it faster.
+
+## The Rubric
+
+For every candidate, score each of these zero to two (0 = not observed, 1 = observed, 2 = observed with depth). Total out of 12.
+
+- Read unfamiliar code quickly (from the debug round)
+- Articulate trade-offs clearly (from the design round)
+- Say "I do not know" appropriately (across all rounds)
+- Own past outcomes with specifics (from the incident conversation)
+- Spot subtle bugs in code they did not write (from the review exercise)
+- Handle adversarial follow-up without shutting down (from the design round)
+
+Nine or above: strong hire. Six to eight: careful hire, name the concern. Below six: do not hire, no matter how nice they were.
+
+The rubric is what stops "gut feel" from being the actual decision criterion. Gut feel is the enemy of good hiring, because gut feel is culturally biased and interviewer-specific. The rubric is portable across interviewers.
+
+## Prompting AI for Interview Design (Not for Interviews)
+
+Use AI to design the interview, not to run it. The runner should always be a human.
+
+**Weak prompt (produces LeetCode):**
+
+> What are good interview questions for a senior engineer?
+
+**Structured prompt (produces signal-heavy exercises):**
+
+> **Role:** Senior engineering interviewer.
+> **Context:** I am interviewing for [role] on a team that owns [system]. Candidates have access to AI assistants in every stage of the process.
+> **Task:** Propose three interview exercises that (a) cannot be shortcut by pasting into an AI assistant, (b) test judgment and communication under mild pressure, and (c) produce a scored signal for hire / do not hire.
+> **Constraint:** No traditional LeetCode. No greenfield "design Twitter" prompts. Every exercise must involve reading real code, code the candidate did not write, and defending a decision verbally.
+
+What comes back is a starting point. The specific exercises still need to be tailored to your codebase and refined with a colleague. But it is a better starting point than "system design round + coding round + culture chat," which is what most companies still run in 2026.
+
+## The Question Worth Asking Every Hire
+
+If you hire one engineer this year, you are betting a team member's daily experience, an unknown fraction of your product's future incidents, and your recruiting bandwidth for the next several months.
+
+Before making an offer, ask: **would I want this person to inherit my on-call rotation.**
+
+If yes, hire. If not, do not, no matter how impressive the résumé looks. The answer to that question is the only one that predicts what you will actually feel about the hire in six months.
+
+Everything else is theatre.

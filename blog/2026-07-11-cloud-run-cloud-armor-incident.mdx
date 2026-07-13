@@ -1,0 +1,220 @@
+---
+title: "How I Build: Cloud Run, Cloud Armor, and the Two Infra Changes That Took Down My App"
+authors: [balangyaoejuspher]
+tags: [architecture, resiliency, devops, standards]
+date: 2026-07-11
+slug: /cloud-run-cloud-armor-incident
+---
+
+Last week I shipped a new environment on Google Cloud Run for a system that had been running fine for weeks. Nothing in my code changed. Two things changed in the infrastructure around my code. Both of them took the app down.
+
+This post is what I learned from that week. The specifics are Google Cloud (Cloud Run, Cloud Armor, Cloud Load Balancer), but the pattern applies to every managed platform. If your team runs on AWS App Runner, Azure Container Apps, Vercel, Fly.io, Render, or any other "just push code" platform, this incident is waiting for you the moment the platform team touches DNS or the security team enables a WAF.
+
+{/* truncate */}
+
+## Where It Started
+
+The system had been running on Cloud Run for a while against the raw `*.run.app` URL that Cloud Run auto-generates. Everything worked. Health checks green, latency fine, no complaints.
+
+Then two changes landed almost simultaneously:
+
+1. **A proper FQDN via Cloud DNS.** The system administrator put an HTTPS load balancer in front of the Cloud Run service and pointed a real customer-facing domain at it. `api.example.com` instead of `service-xyz-uc.a.run.app`.
+2. **Cloud Armor with the preconfigured OWASP CRS ruleset.** The security team attached a Cloud Armor policy to the load balancer with the preconfigured `sqli-v33-stable` and `xss-v33-stable` rules at Google's default sensitivity.
+
+Both changes were, on their own, correct engineering. Custom domains are how you serve real users. WAFs catch real attacks. The problem was not that these changes happened. The problem was what they broke when they happened together, and how nobody had verified either against the actual app before the change.
+
+## Symptom One: The App Kept Generating the Raw URL
+
+The moment the FQDN was live, the app went half-broken. Users could load pages. They could not complete anything that involved a redirect, an email link, or an inter-service callback. Every generated URL still pointed at the raw `*.run.app` hostname, not the new `api.example.com`.
+
+This was infuriating because the app was already **designed to be URL-agnostic**. Every URL that gets generated is built from a `BASE_URL` env var. That env var was updated to the new FQDN before the DNS cutover. On the surface, nothing should have been reading the raw URL at all.
+
+The team spent a day tracing this. What we eventually found:
+
+**Some parts of the code were building URLs from the request's `Host` header, not from `BASE_URL`.** Not everywhere. Just enough to matter.
+
+The specific offenders:
+- OAuth callback URLs, constructed at request time from `req.headers.host`.
+- Signed download URLs that used the current request's host as the base.
+- One templated email that used `${req.protocol}://${req.get('host')}` because the person who wrote it thought that was more correct than using `BASE_URL`.
+
+On Cloud Run, when a request comes through the load balancer, the `Host` header can end up being one of two values depending on how the load balancer is configured: the load balancer's frontend host (`api.example.com`), or the direct Cloud Run URL if the request bypassed the load balancer. Cloud Run itself always serves at its `*.run.app` URL, and internal callers (health checks, direct probes, cron jobs pointing at the raw URL) can still hit it. The mix of "sometimes I see the FQDN in `Host`, sometimes I see the raw URL" was the tell.
+
+The fix had three parts:
+
+1. **Trust the proxy explicitly.** In the framework (Express-family, but the concept applies anywhere), enable trust proxy so that `req.hostname` and `req.protocol` respect `X-Forwarded-Host` and `X-Forwarded-Proto` set by Google's load balancer. Cloud Run and Google's HTTPS load balancer both set these, but only if the app opts into trusting them.
+2. **Never build a URL from `Host`.** Every URL-generating call site was audited and rewritten to use `BASE_URL` from env, not any request header. The `Host` header is untrusted input by design; treating it as the source of truth for public URLs is a bug even when it happens to work.
+3. **Block the raw URL at the ingress.** The load balancer was configured to reject requests where `Host` was the raw `*.run.app` URL. This means the raw URL cannot even be used to reach the service anymore. Everything comes through the FQDN or it does not come at all.
+
+The general lesson: **URL agnosticism means every URL-generating call site reads from one place.** "Env-driven" is not a design property; it is a per-call-site invariant. Missing one call site is enough to reproduce this incident, and static grep is not enough to find them all when they hide behind template literals.
+
+## Symptom Two: Cloud Armor Blocked the Cookies
+
+While we were fixing the URL issue, the WAF was quietly starting a second incident.
+
+Cloud Armor was configured with the preconfigured `sqli-v33-stable` rule at Google's default sensitivity. The moment the load balancer went live, users started seeing 403 Forbidden intermittently. Sometimes on the first page load. Sometimes ten pages in. Sometimes not for hours.
+
+The Cloud Armor logs told the story. Every 403 was a request that got matched against a SQL-injection rule in the 942xxx family (the OWASP ModSecurity CRS family for SQLi detection). Not on the URL. Not on POST bodies. **On the cookies.**
+
+Specifically, the session cookie. Every request carries it. The value of the session cookie changes over time as users log in, out, and get their sessions rotated. The rule was matching on characters and character sequences inside the cookie that the CRS rule considers "SQL-injection-shaped": single quotes, `OR 1=1`-like patterns, base64-decoded fragments that happened to contain SQL keywords, and so on.
+
+This is a well-known category of Cloud Armor false positive. The CRS rules were written to inspect all request fields for SQL-injection patterns. Session cookies (especially JWT-like or base64-encoded ones) will eventually match, because random data plus a broad regex family will always eventually match. The rules are working exactly as designed. The design is broadly too aggressive for the reality of a production app.
+
+(I have written this up in more depth, cross-referenced against AWS WAF and Cloudflare, in my public [WAF Survival Guide](https://balangyaoejuspher.github.io/waf-survival-guide/). The [cookie / JWT false positives](https://balangyaoejuspher.github.io/waf-survival-guide/concepts/cookie-false-positives/) page and the [rule 942100 reference](https://balangyaoejuspher.github.io/waf-survival-guide/rules/942100/) both cover this exact failure mode with log queries and Terraform snippets per provider.)
+
+The correct response is **rule tuning**, not rule removal. There is a middle ground that Google's docs describe clearly:
+
+- **Lower the sensitivity level.** Cloud Armor's preconfigured rules have a sensitivity level from 1 to 4. Default is often 1 (least aggressive) but some templates ship with higher. Level 1 filters out the noisiest sub-rules while keeping the high-signal ones.
+- **Opt out of specific rule IDs.** If a specific rule ID keeps false-positive-ing on cookies (say, `owasp-crs-v030301-id942100-sqli`), you can opt out of that specific rule while keeping the rest of the SQLi family active.
+- **Exclude specific request fields.** Cloud Armor supports request-field exclusions per rule. You can say "for rule family X, do not inspect the `Cookie` header at all," which stops the false positive without disabling the rule for the URI, headers, and body where SQLi actually shows up.
+
+Any one of these would have solved the incident. The rule family stays active. The specific false-positive pattern stops being blocked. Security is maintained.
+
+## The AppSec Team Dynamic
+
+Here is where the incident got harder than the technical part.
+
+The AppSec team was blocking on this. Their position: the preconfigured rule ships as-is, and any modification is a security regression. My proposal (lower sensitivity to 1, opt out of one specific rule ID, exclude cookie inspection for that rule) was heard as "disable the SQL-injection protection."
+
+That is not what I was proposing. Ever. My proposal was, in full:
+
+- **Keep the preconfigured rule family enabled.** Do not swap it for a custom rule. Do not opt out of the family.
+- **Lower sensitivity from the current level to 1.** Sensitivity 1 is Google's own recommended starting point for production traffic. Higher sensitivity is a shipping-and-tuning path, not a default.
+- **Exclude the session cookie from inspection for the specific rules that keep false-positive-ing.** The session cookie is generated server-side, signed, and validated on every request. SQL injection cannot enter through it, because it is not user-controlled input.
+- **Run in "preview" mode for 72 hours after any change.** Cloud Armor supports preview mode where rules are evaluated and logged but not enforced. Every proposed tuning change goes through preview first, we look at what would have blocked, and only enforce if the false-positive rate is acceptable.
+
+That proposal is more work for the security team, not less. It is also demonstrably safer than the current setup, because the current setup is a WAF policy that blocks legitimate traffic, gets bypassed by whichever team can most loudly demand exceptions, and eventually gets turned off entirely by whoever escalates hardest.
+
+The framing that broke the deadlock: **"we are not asking to weaken the rule. We are asking to teach it what our real traffic looks like."** Same rule family, same sensitivity, same enforcement, plus a documented list of exclusions that keep false positives out of the enforcement path. Every exclusion is a written PR with a written justification, reviewed by AppSec.
+
+This is the house rule in the [WAF Survival Guide](https://balangyaoejuspher.github.io/waf-survival-guide/): if a proposed fix is "turn off rule XXX globally," the PR gets rejected. Tuning is target exclusions plus preview-mode rollout, and every exception is entered in an audit ledger anyone can read. That framing is what makes it possible to have a productive conversation with security, because the ask is now scoped and reviewable rather than open-ended.
+
+That got approved. What did not get approved was "keep the current setup and hope users stop hitting it," which was the alternative.
+
+## Environment-Scoped Tuning: The Promotion Trap
+
+There is a second, more subtle friction with a corporate AppSec team, and it is the one that actually kills new-app launches under deadline. The tuning-vs-disabling misread from the previous section is upstream. This one is where the shipping stops.
+
+The policy: **any WAF exclusion granted in a lower environment is automatically promoted to production.** The AppSec argument for it is defensible on its face, "we do not want dev-only exceptions silently leaking into production." The instinct is correct. The mechanism is wrong.
+
+Here is what actually happens under that policy on a new app with a real launch date:
+
+- Developer hits a false positive in staging. Real users cannot log in during a demo.
+- Developer files a tuning request with AppSec.
+- AppSec responds: "if we add this in staging, it will be added in production."
+- The exclusion now has to be scoped as if it were going straight to prod, which requires evidence the dev does not have yet, from traffic the dev has not seen yet, on an app that does not have real users yet.
+- The dev has three options, all of them bad:
+  - **Push back and ship with the bug.** Product owns the incident when a beta user hits it during launch week.
+  - **Accept a broader exclusion than they actually need**, because the "final" version has to be broad enough to cover an unknown production traffic shape.
+  - **Delay the launch to gather production-shaped traffic in staging**, which is a tautology (you do not have production traffic in staging by definition).
+
+None of those outcomes are good. All of them are the fault of the process, not the people. Both the AppSec team and the app team are trying to do their jobs correctly, and the promotion policy has put them in a design where doing them correctly at the same time is impossible.
+
+The correct pattern splits **tuning** from **promotion**:
+
+- **Every environment gets its own WAF policy config.** Dev has one. Staging has one. Prod has one. Each is version-controlled, each is independently updatable.
+- **Staging exclusions are experiments, not commitments.** A developer adding a broader-than-strictly-necessary exclusion in staging to unblock a demo is fine, because that exclusion is not going anywhere on its own. It stays in staging until someone explicitly promotes it.
+- **Promotion to production is a separate, explicit action.** A dedicated PR against the prod WAF config, with evidence (staging log entries, preview-mode enforcement data, false-positive rate over some window). AppSec reviews the promotion PR with the right amount of scrutiny for its actual blast radius.
+- **Some exclusions never promote.** Staging can allow test payloads that would (correctly) be blocked in production. That is a feature of environment-scoped tuning, not a bug.
+- **Promotion often carries tightening.** If the staging exclusion was broad ("exclude all cookies from rule 942100"), the prod version narrows it ("exclude only the `session_id` cookie from rule 942100, only on POST /login"). The promotion PR is where the narrowing gets designed, in context, with evidence.
+
+This is more work up-front for the AppSec team. It is dramatically less work over a year, because it eliminates the recurring argument that plays out every time a new app tries to launch. Right now, dev pushes for the exclusion under deadline, AppSec pushes back on the scope, and the argument is really about the *promotion*, not the *tuning*. Neither side has the vocabulary to say so.
+
+If you are the developer in that argument, name the policy explicitly. "We are not asking to add this to production. We are asking to add it to staging so we can gather evidence. Promotion to production will be a separate PR with the evidence attached." That framing is the one that lets the AppSec team say yes without breaking their (legitimate) principle that dev-env exceptions should not silently leak.
+
+If you are the AppSec engineer in that argument, ask whether the promotion policy is actually protecting production or just enforcing consistency at the cost of shippability. **Consistency is not the same as security.** A WAF policy that never ships correctly because every tuning request is treated as a prod change is not more secure than one that ships with an evidence-backed exclusion proven in staging first. The former is theatre. The latter is engineering.
+
+Yes, this is a corporate-process issue as much as a technical one. Yes, it is annoying to fight. And yes, the argument is worth having every time, because the alternative is a decade of new-app launches slipping their dates because someone was afraid to say "we tune per environment, we promote with review."
+
+## What Cloud Armor Tuning Actually Looks Like
+
+Concrete example of what a well-tuned Cloud Armor policy looks like in gcloud CLI form. Adapt to your terraform or console workflow. Do not copy this without reading it against current Google docs, because Cloud Armor's rule syntax evolves.
+
+The starting point: a preconfigured SQLi rule at sensitivity 1, with exclusions for the session cookie on the two rule IDs that keep false-positive-ing.
+
+```yaml
+name: waf-policy-prod
+description: Production WAF with tuned OWASP CRS rules
+default_rule_action: allow
+
+rules:
+  - priority: 1000
+    description: OWASP SQLi rules, sensitivity 1, exclude session cookie
+    match:
+      expr:
+        expression: >
+          evaluatePreconfiguredWaf(
+            'sqli-v33-stable',
+            {'sensitivity': 1, 'opt_out_rule_ids': ['owasp-crs-v030301-id942100-sqli']}
+          )
+    action: deny(403)
+    preview: false
+    header_action:
+      request_headers_to_remove: []
+    preconfigured_waf_config:
+      exclusions:
+        - target_rule_set: sqli-v33-stable
+          target_rule_ids:
+            - owasp-crs-v030301-id942110-sqli
+            - owasp-crs-v030301-id942190-sqli
+          request_cookies_to_exclude:
+            - op: EQUALS
+              val: session_id
+
+  - priority: 2000
+    description: OWASP XSS rules, sensitivity 1
+    match:
+      expr:
+        expression: evaluatePreconfiguredWaf('xss-v33-stable', {'sensitivity': 1})
+    action: deny(403)
+    preview: false
+
+  - priority: 2147483647
+    description: Default allow
+    match:
+      versioned_expr: SRC_IPS_V1
+      config:
+        src_ip_ranges: ['*']
+    action: allow
+```
+
+Three things to notice in that policy.
+
+The exclusion is precise. It names the specific ruleset, the specific rule IDs that keep firing, and the specific cookie name to exclude. It does not exclude "all cookies" or "the whole SQLi family." Every exclusion is auditable.
+
+Every rule has an explicit `preview: false`. When you propose a change, flip the flag to `true`, deploy, watch the logs for 72 hours. If the block rate looks right, flip it back to `false` and enforce.
+
+The default action at the bottom is `allow`. This is a common source of confusion: Cloud Armor's default action if no rule matches is whatever you configure at the policy level, and the explicit rule at priority `2147483647` (the highest possible number, meaning last-matched) is what encodes that.
+
+Read the [Cloud Armor tuning docs](https://cloud.google.com/armor/docs/rule-tuning) for the exact field names and current syntax. The pattern above is the shape. The specific fields shift as Google adds features. For a maintained, end-to-end version of this workflow (log queries in Cloud Logging, gcloud commands, and a Terraform reference), see the [GCP Cloud Armor provider guide](https://balangyaoejuspher.github.io/waf-survival-guide/provider-guides/gcp-cloud-armor/) in the WAF Survival Guide.
+
+## What the Postmortem Actually Changed
+
+Once both fires were out, we did the postmortem that mattered. The lasting changes it produced:
+
+**Infra changes that touch traffic paths now require app-team sign-off.** Any PR that modifies DNS, load balancer config, WAF rules, or Cloud Run routing must be reviewed by at least one engineer from the team that owns the affected service. Not blocked on it. Reviewed. That is the difference between "the platform team ships and we find out at 2 a.m." and "the platform team ships after two eyes from the app team said this looks fine."
+
+**A staging environment that mirrors production infra.** Not "similar to production." Same load balancer type, same Cloud Armor policy, same DNS setup. Every proposed WAF or DNS change goes to staging first, sits there for 24 hours under real synthetic traffic, and only then goes to production. This is expensive. It is cheaper than the incident.
+
+**A trust-proxy convention in every service.** Every service in the org has a documented, code-enforced rule for how it handles `X-Forwarded-Host` and `X-Forwarded-Proto`. New services fail lint if the rule is not applied. This eliminates the class of bug in Symptom 1 entirely.
+
+**A WAF-tuning runbook that anyone can propose against.** Not "email AppSec." A written process: file a PR against the WAF policy, describe the false positive with evidence from logs, propose the specific exclusion or sensitivity change, deploy in preview mode for 72 hours, review preview logs, then enforce. AppSec still owns the approval. The proposal path is now open to any engineer instead of being ad hoc.
+
+**A rule that the security team gets to enforce and the app team gets to survive.** This is the underlying lesson, and it is worth writing on a whiteboard: **security defaults that break the app are not secure. They are just failed.** A WAF that blocks legitimate traffic will be worked around, escalated past, or eventually disabled. Tuning is the price of a WAF that survives contact with production.
+
+## Closing
+
+Every managed platform is a set of opinions. Some of those opinions align with your app. Some do not. The ones that do not will not announce themselves. They will wait for the day someone in the platform or security org rolls out a change that flips a default, and then they will take your app down in a way that looks like an app bug.
+
+Two things to write down before the next platform change:
+
+1. **Every URL your app generates comes from one place.** Not "from env vars mostly." From one place, verified by a lint rule and a test.
+2. **Every security rule your app runs behind was tested against your real traffic in count-mode first.** Not "eventually will be tuned." Tuned before enforce.
+
+Neither of these is glamorous. Neither is exciting. Both are the difference between platform changes that ship quietly and platform changes that become the story of your week.
+
+Mine was the second kind. Yours does not have to be.
+
+## Further Reading
+
+If you want the systematic version of the WAF half of this post (triage matrix mapping HTTP symptoms to rule families, per-provider log queries, Terraform snippets for tuning on GCP / AWS / Cloudflare, and an audit-ledger pattern for tracking every exception), the [WAF Survival Guide](https://balangyaoejuspher.github.io/waf-survival-guide/) is a public resource I maintain that covers all of it. It is MIT-licensed, PRs welcome.
