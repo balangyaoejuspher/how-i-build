@@ -1,14 +1,14 @@
 ---
-title: "How I Build: Cloud Run, Cloud Armor, and the Two Infra Changes That Took Down My App"
+title: "How I Build: Cloud Run, Cloud Armor, and the Two Infra Changes That Took Down Our App"
 authors: [balangyaoejuspher]
 tags: [architecture, resiliency, devops, standards]
 date: 2026-07-11
 slug: /cloud-run-cloud-armor-incident
 ---
 
-Last week I shipped a new environment on Google Cloud Run for a system that had been running fine for weeks. Nothing in my code changed. Two things changed in the infrastructure around my code. Both of them took the app down.
+Last week we shipped a new environment on Google Cloud Run for a system that had been running fine for weeks. Nothing in our code changed. Two things changed in the infrastructure around our code. Both of them took the app down.
 
-This post is what I learned from that week. The specifics are Google Cloud (Cloud Run, Cloud Armor, Cloud Load Balancer), but the pattern applies to every managed platform. If your team runs on AWS App Runner, Azure Container Apps, Vercel, Fly.io, Render, or any other "just push code" platform, this incident is waiting for you the moment the platform team touches DNS or the security team enables a WAF.
+This post is what we learned from that week. The specifics are Google Cloud (Cloud Run, Cloud Armor, Cloud Load Balancer), but the pattern applies to every managed platform. If your team runs on AWS App Runner, Azure Container Apps, Vercel, Fly.io, Render, or any other "just push code" platform, this incident is waiting for you the moment the platform team touches DNS or the security team enables a WAF.
 
 {/* truncate */}
 
@@ -23,11 +23,13 @@ Then two changes landed almost simultaneously:
 
 Both changes were, on their own, correct engineering. Custom domains are how you serve real users. WAFs catch real attacks. The problem was not that these changes happened. The problem was what they broke when they happened together, and how nobody had verified either against the actual app before the change.
 
-## Symptom One: The App Kept Generating the Raw URL
+## Symptom One: The App Was Baking the Wrong Hostname Into Every URL It Emitted
 
-The moment the FQDN was live, the app went half-broken. Users could load pages. They could not complete anything that involved a redirect, an email link, or an inter-service callback. Every generated URL still pointed at the raw `*.run.app` hostname, not the new `api.example.com`.
+To be clear about what did and did not change: the raw Cloud Run `*.run.app` URL is stable. Cloud Run generates it once when the service is created and it stays the same for the life of the service. It is not rotating. What changed was the *public* URL users were supposed to see. The app kept producing URLs that pointed at the raw hostname instead of the new FQDN.
 
-This was infuriating because the app was already **designed to be URL-agnostic**. Every URL that gets generated is built from a `BASE_URL` env var. That env var was updated to the new FQDN before the DNS cutover. On the surface, nothing should have been reading the raw URL at all.
+The moment the FQDN was live, the app went half-broken. Users could load pages. They could not complete anything that involved a redirect, an email link, or an inter-service callback. Every URL the app *generated at request time* still pointed at the raw `*.run.app` hostname, not the new `api.example.com`.
+
+This was infuriating because the app was already **designed to be URL-agnostic**. Every URL is supposed to be built from a `BASE_URL` env var. That env var was updated to the new FQDN before the DNS cutover. On the surface, nothing should have been reading the raw URL at all.
 
 The team spent a day tracing this. What we eventually found:
 
@@ -56,7 +58,9 @@ Cloud Armor was configured with the preconfigured `sqli-v33-stable` rule at Goog
 
 The Cloud Armor logs told the story. Every 403 was a request that got matched against a SQL-injection rule in the 942xxx family (the OWASP ModSecurity CRS family for SQLi detection). Not on the URL. Not on POST bodies. **On the cookies.**
 
-Specifically, the session cookie. Every request carries it. The value of the session cookie changes over time as users log in, out, and get their sessions rotated. The rule was matching on characters and character sequences inside the cookie that the CRS rule considers "SQL-injection-shaped": single quotes, `OR 1=1`-like patterns, base64-decoded fragments that happened to contain SQL keywords, and so on.
+Specifically, the session cookie. Every request carries it. And that value is not static: **a fresh cookie is issued on each login, and existing cookies get rotated on session refresh.** So over the course of a normal user's day, the WAF sees a stream of different cookie values passing through the same 942xxx rule family. Sooner or later, one of those values contains a byte sequence the CRS rule considers "SQL-injection-shaped": a single quote, an `OR 1=1`-like fragment, a base64-decoded chunk that happens to contain SQL keywords, or a pattern the `libinjection` library flags.
+
+What looked like "the WAF is blocking us randomly" was actually "the rule is deterministic, the input space rotates." Given enough logins, a match becomes certain.
 
 This is a well-known category of Cloud Armor false positive. The CRS rules were written to inspect all request fields for SQL-injection patterns. Session cookies (especially JWT-like or base64-encoded ones) will eventually match, because random data plus a broad regex family will always eventually match. The rules are working exactly as designed. The design is broadly too aggressive for the reality of a production app.
 
