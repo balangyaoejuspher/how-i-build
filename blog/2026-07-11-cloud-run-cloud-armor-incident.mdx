@@ -1,16 +1,18 @@
 ---
-title: "How I Build: Cloud Run, Cloud Armor, and the Two Infra Changes That Took Down Our App"
+title: "How I Build: Cloud Run, Cloud Armor, and the Two Infra Changes Blocking Our Launch"
 authors: [balangyaoejuspher]
 tags: [architecture, resiliency, devops, standards]
 date: 2026-07-11
 slug: /cloud-run-cloud-armor-incident
 ---
 
-Last week we shipped a new environment on Google Cloud Run for a system that had been running fine for weeks. Nothing in our code changed. Two things changed in the infrastructure around our code. Both of them took the app down.
+Our team is currently standing up a new environment on Google Cloud Run for a system that had been running fine in earlier stages. Nothing in our code has changed. Two things changed in the infrastructure around our code, and both of them are actively blocking us from progressing to the next environment.
 
-This post is what we learned from that week. The specifics are Google Cloud (Cloud Run, Cloud Armor, Cloud Load Balancer), but the pattern applies to every managed platform. If your team runs on AWS App Runner, Azure Container Apps, Vercel, Fly.io, Render, or any other "just push code" platform, this incident is waiting for you the moment the platform team touches DNS or the security team enables a WAF.
+This post is what I've observed from the sidelines while my team works through it. I'm on a different project right now, so I'm one step removed from the day-to-day debugging. But the pattern is common enough to be worth writing up, and if I were leading the fix, this is what I'd do. The specifics are Google Cloud (Cloud Run, Cloud Armor, Cloud Load Balancer), but the shape applies to every managed platform. If your team runs on AWS App Runner, Azure Container Apps, Vercel, Fly.io, Render, or any other "just push code" platform, the same class of problem is waiting for you the moment the platform team touches DNS or the security team enables a WAF.
 
 {/* truncate */}
+
+**Framing note.** This is a live problem, not a resolved postmortem. It's in a lower environment; no customer traffic has been affected. What follows is the pattern as I've watched it unfold, the fixes I'd prescribe, and the structural changes I'd want to come out of it once we're through. Names, specific rule configurations, and internal tickets have been generalized.
 
 ## Where It Started
 
@@ -21,17 +23,17 @@ Then two changes landed almost simultaneously:
 1. **A proper FQDN via Cloud DNS.** The system administrator put an HTTPS load balancer in front of the Cloud Run service and pointed a real customer-facing domain at it. `api.example.com` instead of `service-xyz-uc.a.run.app`.
 2. **Cloud Armor with the preconfigured OWASP CRS ruleset.** The security team attached a Cloud Armor policy to the load balancer with the preconfigured `sqli-v33-stable` and `xss-v33-stable` rules at Google's default sensitivity.
 
-Both changes were, on their own, correct engineering. Custom domains are how you serve real users. WAFs catch real attacks. The problem was not that these changes happened. The problem was what they broke when they happened together, and how nobody had verified either against the actual app before the change.
+Both changes are, on their own, correct engineering. Custom domains are how you serve real users. WAFs catch real attacks. The problem is not that these changes happened. The problem is what they break when they happen together, and that nobody verified either against the actual app before the change.
 
 ## Symptom One: The App Was Baking the Wrong Hostname Into Every URL It Emitted
 
 To be clear about what did and did not change: the raw Cloud Run `*.run.app` URL is stable. Cloud Run generates it once when the service is created and it stays the same for the life of the service. It is not rotating. What changed was the *public* URL users were supposed to see. The app kept producing URLs that pointed at the raw hostname instead of the new FQDN.
 
-The moment the FQDN was live, the app went half-broken. Users could load pages. They could not complete anything that involved a redirect, an email link, or an inter-service callback. Every URL the app *generated at request time* still pointed at the raw `*.run.app` hostname, not the new `api.example.com`.
+The moment the FQDN went live, the app went half-broken in that environment. Test users can load pages. They can't complete anything that involves a redirect, an email link, or an inter-service callback. Every URL the app *generates at request time* still points at the raw `*.run.app` hostname, not the new `api.example.com`.
 
-This was infuriating because the app was already **designed to be URL-agnostic**. Every URL is supposed to be built from a `BASE_URL` env var. That env var was updated to the new FQDN before the DNS cutover. On the surface, nothing should have been reading the raw URL at all.
+This is frustrating because the app is already **designed to be URL-agnostic**. Every URL is supposed to be built from a `BASE_URL` env var. That env var was updated to the new FQDN before the DNS cutover. On the surface, nothing should be reading the raw URL at all.
 
-The team spent a day tracing this. What we eventually found:
+The team has spent time tracing this. What they've found:
 
 **Some parts of the code were building URLs from the request's `Host` header, not from `BASE_URL`.** Not everywhere. Just enough to matter.
 
@@ -42,21 +44,21 @@ The specific offenders:
 
 On Cloud Run, when a request comes through the load balancer, the `Host` header can end up being one of two values depending on how the load balancer is configured: the load balancer's frontend host (`api.example.com`), or the direct Cloud Run URL if the request bypassed the load balancer. Cloud Run itself always serves at its `*.run.app` URL, and internal callers (health checks, direct probes, cron jobs pointing at the raw URL) can still hit it. The mix of "sometimes I see the FQDN in `Host`, sometimes I see the raw URL" was the tell.
 
-The fix had three parts:
+The fix I'd push for has three parts:
 
 1. **Trust the proxy explicitly.** In the framework (Express-family, but the concept applies anywhere), enable trust proxy so that `req.hostname` and `req.protocol` respect `X-Forwarded-Host` and `X-Forwarded-Proto` set by Google's load balancer. Cloud Run and Google's HTTPS load balancer both set these, but only if the app opts into trusting them.
-2. **Never build a URL from `Host`.** Every URL-generating call site was audited and rewritten to use `BASE_URL` from env, not any request header. The `Host` header is untrusted input by design; treating it as the source of truth for public URLs is a bug even when it happens to work.
-3. **Block the raw URL at the ingress.** The load balancer was configured to reject requests where `Host` was the raw `*.run.app` URL. This means the raw URL cannot even be used to reach the service anymore. Everything comes through the FQDN or it does not come at all.
+2. **Never build a URL from `Host`.** Every URL-generating call site should be audited and rewritten to use `BASE_URL` from env, not any request header. The `Host` header is untrusted input by design; treating it as the source of truth for public URLs is a bug even when it happens to work.
+3. **Block the raw URL at the ingress.** Configure the load balancer to reject requests where `Host` is the raw `*.run.app` URL. Then the raw URL can't even be used to reach the service. Everything comes through the FQDN or it doesn't come at all.
 
 The general lesson: **URL agnosticism means every URL-generating call site reads from one place.** "Env-driven" is not a design property; it is a per-call-site invariant. Missing one call site is enough to reproduce this incident, and static grep is not enough to find them all when they hide behind template literals.
 
 ## Symptom Two: Cloud Armor Blocked the Cookies
 
-While we were fixing the URL issue, the WAF was quietly starting a second incident.
+While the team is working on the URL issue, the WAF is quietly running a second problem in parallel.
 
-Cloud Armor was configured with the preconfigured `sqli-v33-stable` rule at Google's default sensitivity. The moment the load balancer went live, users started seeing 403 Forbidden intermittently. Sometimes on the first page load. Sometimes ten pages in. Sometimes not for hours.
+Cloud Armor is configured with the preconfigured `sqli-v33-stable` rule at Google's default sensitivity. Since the load balancer went live, test users have been seeing 403 Forbidden intermittently. Sometimes on the first page load. Sometimes ten pages in. Sometimes not for hours.
 
-The Cloud Armor logs told the story. Every 403 was a request that got matched against a SQL-injection rule in the 942xxx family (the OWASP ModSecurity CRS family for SQLi detection). Not on the URL. Not on POST bodies. **On the cookies.**
+The Cloud Armor logs tell the story. Every 403 is a request that got matched against a SQL-injection rule in the 942xxx family (the OWASP ModSecurity CRS family for SQLi detection). Not on the URL. Not on POST bodies. **On the cookies.**
 
 Specifically, the session cookie. Every request carries it. And that value is not static: **a fresh cookie is issued on each login, and existing cookies get rotated on session refresh.** So over the course of a normal user's day, the WAF sees a stream of different cookie values passing through the same 942xxx rule family. Sooner or later, one of those values contains a byte sequence the CRS rule considers "SQL-injection-shaped": a single quote, an `OR 1=1`-like fragment, a base64-decoded chunk that happens to contain SQL keywords, or a pattern the `libinjection` library flags.
 
@@ -78,9 +80,9 @@ Any one of these would have solved the incident. The rule family stays active. T
 
 Here is where the incident got harder than the technical part.
 
-The AppSec team was blocking on this. Their position: the preconfigured rule ships as-is, and any modification is a security regression. My proposal (lower sensitivity to 1, opt out of one specific rule ID, exclude cookie inspection for that rule) was heard as "disable the SQL-injection protection."
+The AppSec team is currently blocking on this. Their position: the preconfigured rule ships as-is, and any modification is a security regression. When rule-tuning has been suggested (lower sensitivity to 1, opt out of one specific rule ID, exclude cookie inspection for that rule), it gets heard as "disable the SQL-injection protection."
 
-That is not what I was proposing. Ever. My proposal was, in full:
+That's not the proposal. Ever. What I'd bring to the argument, in full:
 
 - **Keep the preconfigured rule family enabled.** Do not swap it for a custom rule. Do not opt out of the family.
 - **Lower sensitivity from the current level to 1.** Sensitivity 1 is Google's own recommended starting point for production traffic. Higher sensitivity is a shipping-and-tuning path, not a default.
@@ -93,7 +95,7 @@ The framing that broke the deadlock: **"we are not asking to weaken the rule. We
 
 This is the house rule in the [WAF Survival Guide](https://balangyaoejuspher.github.io/waf-survival-guide/): if a proposed fix is "turn off rule XXX globally," the PR gets rejected. Tuning is target exclusions plus preview-mode rollout, and every exception is entered in an audit ledger anyone can read. That framing is what makes it possible to have a productive conversation with security, because the ask is now scoped and reviewable rather than open-ended.
 
-That got approved. What did not get approved was "keep the current setup and hope users stop hitting it," which was the alternative.
+That's the framing that would break the deadlock, if the argument were mine to lead. The alternative currently on the table ("keep the setup, hope test users stop hitting it") is not a strategy.
 
 ## Environment-Scoped Tuning: The Promotion Trap
 
@@ -192,19 +194,19 @@ The default action at the bottom is `allow`. This is a common source of confusio
 
 Read the [Cloud Armor tuning docs](https://cloud.google.com/armor/docs/rule-tuning) for the exact field names and current syntax. The pattern above is the shape. The specific fields shift as Google adds features. For a maintained, end-to-end version of this workflow (log queries in Cloud Logging, gcloud commands, and a Terraform reference), see the [GCP Cloud Armor provider guide](https://balangyaoejuspher.github.io/waf-survival-guide/provider-guides/gcp-cloud-armor/) in the WAF Survival Guide.
 
-## What the Postmortem Actually Changed
+## What the Postmortem Should Actually Produce
 
-Once both fires were out, we did the postmortem that mattered. The lasting changes it produced:
+When we're through this, here are the structural changes I'd fight for. Not one-off fixes. Permanent process changes that stop the next launch from hitting the same wall:
 
-**Infra changes that touch traffic paths now require app-team sign-off.** Any PR that modifies DNS, load balancer config, WAF rules, or Cloud Run routing must be reviewed by at least one engineer from the team that owns the affected service. Not blocked on it. Reviewed. That is the difference between "the platform team ships and we find out at 2 a.m." and "the platform team ships after two eyes from the app team said this looks fine."
+**Infra changes that touch traffic paths should require app-team sign-off.** Any PR that modifies DNS, load balancer config, WAF rules, or Cloud Run routing needs review from at least one engineer from the team that owns the affected service. Not blocked on it. Reviewed. That's the difference between "the platform team ships and we find out during on-call" and "the platform team ships after two eyes from the app team said this looks fine."
 
-**A staging environment that mirrors production infra.** Not "similar to production." Same load balancer type, same Cloud Armor policy, same DNS setup. Every proposed WAF or DNS change goes to staging first, sits there for 24 hours under real synthetic traffic, and only then goes to production. This is expensive. It is cheaper than the incident.
+**A staging environment that mirrors production infra.** Not "similar to production." Same load balancer type, same Cloud Armor policy, same DNS setup. Every proposed WAF or DNS change goes to staging first, sits there for 24 hours under real synthetic traffic, and only then goes to production. This is expensive. It's cheaper than the incident it would have prevented.
 
-**A trust-proxy convention in every service.** Every service in the org has a documented, code-enforced rule for how it handles `X-Forwarded-Host` and `X-Forwarded-Proto`. New services fail lint if the rule is not applied. This eliminates the class of bug in Symptom 1 entirely.
+**A trust-proxy convention in every service.** Every service in the org gets a documented, code-enforced rule for how it handles `X-Forwarded-Host` and `X-Forwarded-Proto`. New services fail lint if the rule isn't applied. This eliminates the class of bug in Symptom 1 entirely.
 
-**A WAF-tuning runbook that anyone can propose against.** Not "email AppSec." A written process: file a PR against the WAF policy, describe the false positive with evidence from logs, propose the specific exclusion or sensitivity change, deploy in preview mode for 72 hours, review preview logs, then enforce. AppSec still owns the approval. The proposal path is now open to any engineer instead of being ad hoc.
+**A WAF-tuning runbook that anyone can propose against.** Not "email AppSec." A written process: file a PR against the WAF policy, describe the false positive with evidence from logs, propose the specific exclusion or sensitivity change, deploy in preview mode for 72 hours, review preview logs, then enforce. AppSec still owns the approval. The proposal path is open to any engineer instead of being ad hoc.
 
-**A rule that the security team gets to enforce and the app team gets to survive.** This is the underlying lesson, and it is worth writing on a whiteboard: **security defaults that break the app are not secure. They are just failed.** A WAF that blocks legitimate traffic will be worked around, escalated past, or eventually disabled. Tuning is the price of a WAF that survives contact with production.
+**A principle the security team and app team can both hold to.** Worth writing on a whiteboard: **security defaults that break the app are not secure. They are just failed.** A WAF that blocks legitimate traffic will be worked around, escalated past, or eventually disabled. Tuning is the price of a WAF that survives contact with production.
 
 ## Closing
 
@@ -215,9 +217,9 @@ Two things to write down before the next platform change:
 1. **Every URL your app generates comes from one place.** Not "from env vars mostly." From one place, verified by a lint rule and a test.
 2. **Every security rule your app runs behind was tested against your real traffic in count-mode first.** Not "eventually will be tuned." Tuned before enforce.
 
-Neither of these is glamorous. Neither is exciting. Both are the difference between platform changes that ship quietly and platform changes that become the story of your week.
+Neither of these is glamorous. Neither is exciting. Both are the difference between platform changes that ship quietly and platform changes that become the story of your team's month.
 
-Mine was the second kind. Yours does not have to be.
+We're not through this one yet. When we are, the difference between the two outcomes will come down to whether the fix stays a one-off or becomes a permanent process change. That's the argument I'd fight for, and it's the argument this whole blog exists to make.
 
 ## Further Reading
 
