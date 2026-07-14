@@ -1,0 +1,210 @@
+---
+title: "How I Build: Observability From Day One, Because You Cannot Debug What You Cannot See"
+authors: [balangyaoejuspher]
+tags: [architecture, resiliency, standards]
+date: 2026-07-14
+slug: /observability-from-day-one
+---
+
+Every production system I have ever inherited without observability has the same characteristic: when something breaks, people guess. They guess whether the database is slow, guess whether the queue is backed up, guess whether the third-party API is down. And every guess is a 20-minute detour that turns a 10-minute problem into a 4-hour incident.
+
+Observability is not a Phase 4 nice-to-have. It goes on the whiteboard the same day you draw the first architecture diagram. If you ship without it, your first bad incident is going to teach you what "without it" actually costs, and the lesson is expensive.
+
+This post is what I mean by "from day one," what the three pillars actually do, the three questions every service must answer, and how to avoid the cost traps that make observability a line item nobody wants to defend.
+
+{/* truncate */}
+
+## Section 1: The Three Pillars, and What Each Is Actually For
+
+You will read a lot of vendor content that treats logs, metrics, and traces as interchangeable. They are not. Each answers a different question, and skipping any one of them leaves a category of incident you cannot debug.
+
+**Logs answer "what happened."** A discrete event, with a timestamp and enough context to reconstruct what the code was doing. Good for post-hoc reconstruction of a specific request or state change. Bad for aggregate patterns because you cannot easily count them at scale.
+
+**Metrics answer "how much, how often, how fast."** Numeric measurements aggregated over time windows. Good for dashboards, SLOs, and alerts. Bad for reconstructing a single request because they are pre-aggregated and cardinality-constrained.
+
+**Traces answer "why and how."** A request flowing through multiple services or components, with timing at each hop. Good for latency debugging and understanding causal chains across service boundaries. Bad as a primary storage medium because trace volume is huge and query patterns are narrow.
+
+The mistake most teams make is picking one and pretending it covers the other two. Metrics-only shops cannot debug specific user complaints. Logs-only shops cannot see aggregate trends. Traces-only shops end up with excellent latency graphs and no way to answer "was this bug in the request or in a background job?"
+
+Use all three. Not because it is fashionable, because each one closes a class of blind spot the others create.
+
+## Section 2: The Three Questions Every Service Must Answer
+
+Before you buy any tool, write down these three questions and confirm your telemetry can answer them in under five minutes:
+
+1. **What is happening right now?** Real-time visibility into the current state. Error rate, latency, throughput, active connections, queue depth. If someone in a Slack channel says "the site feels slow," you should be answering with numbers within a minute.
+
+2. **Why is it happening?** Once you spot an anomaly, you need to drill down. A latency spike traces to a specific service. A specific service traces to a specific query. A specific query traces to a table lock. You need the causal chain, not just the symptom.
+
+3. **Since when has it been happening?** The most-skipped question, and the most valuable. If p99 latency doubled at 14:22, what changed at 14:22? A deploy? A config flag? A feature-flag toggle? A schema migration? A DNS change? Without a timeline you cannot correlate cause and effect. With one, most incidents resolve themselves inside 15 minutes.
+
+That third question is where change tracking earns its budget. Every deploy, every config change, every feature-flag toggle should be a marker on your metrics dashboards. When incidents happen, you overlay the timeline of changes on the timeline of symptoms and the answer is often obvious.
+
+If your telemetry cannot answer these three questions in under five minutes, you do not have observability. You have logging that you paid a lot of money for.
+
+## Section 3: Structured Everything, or the Data Is Worthless
+
+Free-text logs are technical debt on arrival. Every log line must be structured (JSON is fine, protobuf is fine, some vendors have their own format) with named fields you can query. `"user 42 tried to buy product 99 but got charged twice"` is a story; `{"user_id": 42, "product_id": 99, "event": "double_charge_detected", "amount_cents": 12000, "currency": "USD"}` is queryable.
+
+Three rules that survive contact with production:
+
+- **Every log line has a `request_id` or `trace_id`.** Otherwise you cannot correlate the log to a specific request across services.
+- **Every log line has a `service` and `environment` field.** Otherwise you cannot filter to "prod payments only" in a hurry.
+- **Never log an object you did not sanitize.** `log.info({user})` is how you leak passwords and tokens into your log aggregator, which then gets exfiltrated in the next breach.
+
+The correlation ID is the single most important structural detail. When a request enters your system at the edge (load balancer, API gateway, ingress), it gets a request ID. That ID propagates through every downstream call, every job it enqueues, every log line it emits, every trace span, every database query comment. When something breaks, you paste the ID into your log tool and see the entire journey.
+
+Retrofitting correlation IDs into a running system is painful. Adding them on day one is trivial. Do it on day one.
+
+## Section 4: OpenTelemetry as the Interface
+
+The single most important tooling decision you make is separating "how your app emits telemetry" from "who stores it."
+
+**OpenTelemetry** (OTel) is the vendor-neutral standard for emitting logs, metrics, and traces. Every major observability vendor accepts OTel format. Every language runtime has an OTel SDK. Instrument your services against OTel, and the destination becomes a config change instead of a rewrite.
+
+Without OTel, you instrument against your vendor's SDK. Datadog agent everywhere. New Relic APM tags in every method. Two years later you want to switch vendors because the bill grew 4x and now you rewrite every instrumentation call site.
+
+With OTel, you keep the emitter constant and swap the collector destination. That is not a hypothetical migration; every team I know that adopted OTel eventually used the escape hatch.
+
+Practical setup:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 10s
+  resource:
+    attributes:
+      - key: environment
+        value: production
+        action: upsert
+
+exporters:
+  otlphttp/datadog:
+    endpoint: https://http-intake.logs.datadoghq.com/api/v2/logs
+    headers:
+      dd-api-key: ${DD_API_KEY}
+  prometheusremotewrite/grafana:
+    endpoint: https://prometheus-prod-XX.grafana.net/api/prom/push
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, resource]
+      exporters: [otlphttp/datadog]
+    metrics:
+      receivers: [otlp]
+      processors: [batch, resource]
+      exporters: [prometheusremotewrite/grafana]
+```
+
+Two things to notice. The application code emits OTel; the collector decides where each signal goes. You can send traces to one vendor and metrics to another, or dual-write to both during a migration. You can also add a filesystem or Kafka exporter for archival, without touching a single application service.
+
+## Section 5: SLOs Before Dashboards
+
+The most common failure mode of "we invested in observability" is building 47 dashboards nobody reads, alerting on 200 metrics nobody understands, and paying a five-figure monthly bill for the privilege.
+
+The fix is discipline in the opposite direction: SLOs first, dashboards second.
+
+**A Service Level Objective (SLO)** is a written promise about a specific behavior of your service, expressed as a percentile or a percentage over a window. Examples:
+
+- "99% of GET /orders requests complete in under 300ms, measured over 30 days."
+- "99.9% of successful checkouts result in a confirmation email delivered within 60 seconds."
+- "The reservation-service p99 error rate stays below 0.1% during business hours."
+
+Every dashboard you build should exist to answer a specific question about a specific SLO. If it does not tie back, delete it. This is not asceticism; it is the only way to keep the observability surface small enough that a new hire can learn it in a week instead of never.
+
+Every alert should fire only on SLO burn, not on raw metrics. "CPU is above 80%" is a metric alert; nobody knows what to do with it at 2 a.m. "Checkout SLO is burning 2% of monthly budget in the last hour" is an SLO alert; the on-call knows immediately what is at stake.
+
+Google's SRE book has the canonical treatment of SLOs and error budgets. Read it once, apply the parts that fit your scale, ignore the parts that assume you are Google.
+
+## Section 6: What to Log, What Not to Log
+
+The cost of observability at scale is dominated by ingest and retention. Two categories will explode your bill without you noticing:
+
+**High-cardinality fields.** A metric labeled by `user_id` explodes into millions of time series. Same for `session_id`, `trace_id`, or any user-facing UUID. High cardinality goes in logs and traces (where the value is stored once per event), not in metrics (where each unique combination creates a new series).
+
+**Debug-level logs in production.** Every framework's default log level is too verbose for production. Set it to INFO or WARN. If you need DEBUG, gate it behind a feature flag scoped to a specific request or user. Otherwise you are paying to store noise.
+
+Two categories will bury you in a security incident:
+
+**Personally identifiable information (PII).** Names, emails, phone numbers, payment card fragments, IP addresses (in most jurisdictions). Every log aggregator you use is a target for exfiltration. Assume anything logged is public. Redact at the emitter, not at the store; by the time it hits the aggregator, it has already been transmitted and possibly cached.
+
+**Credentials.** Tokens, API keys, passwords, session cookies. Never log a full request object without a redaction filter. Every framework has one; use it. Then write a lint rule that fails builds if `log.*` is called on unfiltered input.
+
+The rule I use: **every service defines a `Logger` wrapper that enforces redaction rules and structured fields. Direct `console.log` or `logger.info(raw)` calls fail lint.** One wrapper. Enforced by CI. Never a leak of the kind that makes headlines.
+
+## Section 7: DIY Stack vs SaaS
+
+Every team eventually asks whether to run their own observability stack or pay a vendor. Both are valid at different scales.
+
+| Dimension                    | DIY Stack (Loki + Prometheus + Tempo/Jaeger + Grafana)         | SaaS (Datadog, Honeycomb, New Relic, Grafana Cloud, Chronosphere) |
+| ---------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Setup time                   | 2 to 6 weeks for a production-worthy deployment.               | Hours to days, depending on integrations.                          |
+| Ongoing ops burden           | High. Upgrades, scaling, retention tuning, index maintenance. | Low. Vendor handles it.                                            |
+| Cost at low scale (<100 GB/day) | Compute + storage. Often cheaper if you already run k8s.      | Free tier or ~$50 to $200/month.                                   |
+| Cost at high scale (>1 TB/day) | Predictable per-TB storage cost. Scales linearly.             | Can explode. $10k/month+ is normal. Cardinality traps make it worse. |
+| Query expressiveness         | Excellent (PromQL, LogQL, TraceQL are all mature).             | Vendor-specific. Some (Honeycomb, Grafana) are excellent. Others (Datadog logs) less so. |
+| Lock-in                      | Low. Standards-based storage, portable dashboards.             | Medium to high. Custom dashboards and alerts do not port.          |
+| Team required                | 1 dedicated engineer for a while, part-time forever.           | Zero dedicated. Everyone contributes.                              |
+| Right call when              | Team has strong infra chops; workload is predictable; cost matters at scale. | Team is small; time-to-value matters; you have budget.             |
+| Wrong call when              | Team has no k8s / infra bench; you get paged for the observability stack itself. | Cost is a hard ceiling; you have data-residency constraints the vendor cannot meet. |
+
+The pattern I default to for teams under 20 engineers: **SaaS for a year, DIY only if the bill forces you.** Grafana Cloud is a decent middle path: SaaS-managed Grafana with the same query languages and dashboard formats you would run yourself, so migration to DIY later is realistic.
+
+The pattern I default to for teams over 20 engineers with heavy compliance requirements: **DIY, funded as a real team.** At that scale a Datadog bill is a full-time engineer's salary anyway, and the DIY stack has the ergonomic advantage of "the team owns the tool."
+
+Never mix and match randomly. If you send logs to Datadog and metrics to Grafana and traces to Jaeger, correlating across them is manual and painful. Pick one destination per signal type, or pick one destination for everything.
+
+## Section 8: The Anti-Patterns That Kill Observability
+
+Common ways teams get observability wrong even after buying the tools:
+
+**Alerting on every metric.** Every alert that fires and does not require immediate action is training the on-call to ignore alerts. Alert budget is a real thing. Guard it.
+
+**Dashboards no one reads.** A dashboard that has not been opened in 30 days is not a dashboard; it is decoration. Add view-count tracking and prune quarterly.
+
+**Logs without trace IDs.** Debugging becomes archaeology because you cannot correlate anything to anything.
+
+**Metrics without SLOs.** You have a graph of a number. You do not know if the number is bad. Every metric on a dashboard should trace back to a written SLO or a written question. If neither exists, delete the graph.
+
+**Traces without a sampling strategy.** You either sample too little (you never have the trace for the incident) or too much (your bill triples for signal you never look at). Head-based sampling with tail overrides on errors is the sweet spot for most teams.
+
+**PII in logs.** One line of `log.info(user)` and you have GDPR exposure across your entire log retention window.
+
+**Retention shorter than the incident-analysis window.** Your last big incident took 3 days to fully understand. Your retention is 24 hours. You did not have the data. Set retention based on how long a real postmortem takes, not on what the vendor's default is.
+
+## Prompting an Observability Design, Not a Grafana Screenshot
+
+Ask AI "how should I set up monitoring?" and you get a laundry list of tools and default dashboards. Not useful.
+
+**Weak prompt (produces a shopping list):**
+
+> How should I set up monitoring for my service?
+
+**Structured prompt (produces a design):**
+
+> **Role:** SRE designing observability for a new service.
+> **Context:** The service is [description]. Its critical path is [flow]. Expected traffic: [volume]. Team size: [X]. Compliance constraints (PII, retention): [Y].
+> **Task:** For each of the three questions the service must be able to answer (*what is happening now*, *why is it happening*, *since when has it been happening*), specify (a) the signal type (log / metric / trace), (b) the exact field or measurement, (c) the SLO or written question it ties back to, and (d) the alert threshold if any.
+> **Constraint:** Do not propose any dashboard or alert that is not tied to a written SLO or a written question the on-call would ask at 2 a.m. Do not propose high-cardinality metrics.
+
+That prompt forces the model to design against real questions instead of listing tools. What comes back is an outline you can iterate on, not a hello-world scaffold.
+
+## The Rule Worth Writing on the Whiteboard
+
+**If you cannot answer "what changed in the last 15 minutes" in under five minutes, your observability is broken.**
+
+Not "needs improvement." Broken. Regardless of how much you pay Datadog. Regardless of how many dashboards you have. Regardless of how sophisticated your tracing library is. If the question "what changed" is not a one-search answer, you are still guessing during incidents, which means every incident lasts longer than it should.
+
+Design for that question from day one. The three pillars, the three questions, structured logs with correlation IDs, OpenTelemetry as the interface, SLOs before dashboards. None of it is glamorous. All of it is the difference between "we shipped a fix in 20 minutes" and "we spent 4 hours narrowing it down before we could start fixing it."
+
+That gap is where every senior engineer eventually earns the right to demand observability from day one. Start with the demand. The tools follow.
