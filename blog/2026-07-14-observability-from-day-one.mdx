@@ -150,8 +150,8 @@ Every team eventually asks whether to run their own observability stack or pay a
 | ---------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
 | Setup time                   | 2 to 6 weeks for a production-worthy deployment.               | Hours to days, depending on integrations.                          |
 | Ongoing ops burden           | High. Upgrades, scaling, retention tuning, index maintenance. | Low. Vendor handles it.                                            |
-| Cost at low scale (<100 GB/day) | Compute + storage. Often cheaper if you already run k8s.      | Free tier or ~$50 to $200/month.                                   |
-| Cost at high scale (>1 TB/day) | Predictable per-TB storage cost. Scales linearly.             | Can explode. $10k/month+ is normal. Cardinality traps make it worse. |
+| Cost at low scale (under 100 GB/day) | Compute + storage. Often cheaper if you already run k8s.  | Free tier or ~$50 to $200/month.                                   |
+| Cost at high scale (over 1 TB/day)   | Predictable per-TB storage cost. Scales linearly.         | Can explode. $10k/month+ is normal. Cardinality traps make it worse. |
 | Query expressiveness         | Excellent (PromQL, LogQL, TraceQL are all mature).             | Vendor-specific. Some (Honeycomb, Grafana) are excellent. Others (Datadog logs) less so. |
 | Lock-in                      | Low. Standards-based storage, portable dashboards.             | Medium to high. Custom dashboards and alerts do not port.          |
 | Team required                | 1 dedicated engineer for a while, part-time forever.           | Zero dedicated. Everyone contributes.                              |
