@@ -1,0 +1,258 @@
+---
+title: "How I Build: Auth and Identity, the Deep Version. Sessions vs JWTs, OAuth Grants, Token Rotation, and the Leak Patterns That Never Stop"
+authors: [balangyaoejuspher]
+tags: [architecture, standards, tech-stack]
+date: 2026-07-15
+slug: /auth-and-identity
+---
+
+Auth is where every app leaks first. Not because auth is uniquely hard, but because it has a small surface, dozens of well-known failure modes, and every failure is catastrophic in a way most bugs are not. A rendering bug ruins someone's day. An auth bug ends up in a breach notification email, a regulatory letter, and sometimes a lawsuit.
+
+This post is the deep version, not the "use bcrypt" version. It covers the concepts most tutorials conflate, the real trade-offs between session and JWT (and why "always JWT" is a fashion, not a design choice), the OAuth grant types you should actually use in 2026, the token lifecycle patterns that survive contact with a real attacker, the authorization models beyond RBAC, the leak patterns that keep showing up in incident reports, and the managed-vs-DIY decision most teams get wrong.
+
+If you build software that has users, some of this applies to you. All of it applies if you own the auth path.
+
+{/* truncate */}
+
+## Section 1: Three Words That Are Not the Same
+
+Most auth bugs come from conflating three concepts that sound similar and mean different things.
+
+**Identity** is *who someone is*. A person, a service, a bot. Identities have properties (email, name, org membership) and identifiers (user ID, service ID, tenant ID). Identity does not require proof; it is a claim about the world.
+
+**Authentication (authn)** is *proof that someone is who they claim to be*. Password + second factor, hardware key, magic link, mTLS certificate, OAuth token from a trusted provider. Authentication produces a credential the rest of the system can trust for some window of time.
+
+**Authorization (authz)** is *what an authenticated identity is allowed to do*. Can this user read this record. Can this service call this endpoint. Can this admin delete this account. Authorization is a set of rules evaluated per-request against the authenticated identity's attributes and the resource being accessed.
+
+The three are separable in design and often separate in implementation:
+
+- Identity is stored in your user table (or an external identity provider).
+- Authentication is a session or a token, produced by a login flow and validated on every request.
+- Authorization is a policy engine (code or config or an actual policy service like OPA / Zanzibar) that answers `can(subject, action, resource)` for every protected call.
+
+Every place these three get merged into "the auth code" is a place a bug will eventually hide. Separate them mentally, separate them in your code, and half the ambient auth pain goes away.
+
+## Section 2: Session vs JWT, the Trade-off Table No Tutorial Writes
+
+The last decade of frontend fashion has convinced a lot of teams that server-side sessions are old and JWTs are modern. That is wrong. They are different tools with different trade-offs.
+
+**Server-side session** means the server stores the authenticated user's state (session ID, user ID, expiration) in a session store (Redis, a database table, an in-memory store for tiny apps). The client holds a session cookie with an opaque session ID; every request looks the ID up server-side.
+
+**JWT (JSON Web Token)** means the server signs a token containing user claims and hands it to the client. The client sends the token on every request. The server verifies the signature and trusts the claims without needing to look anything up.
+
+| Dimension                        | Server-side Session                                        | JWT                                                             |
+| -------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------- |
+| State                            | Server holds state; client holds an opaque ID.              | Client holds state; server holds only a signing key.             |
+| Revocation                       | Trivial. Delete the session row.                            | Hard. Requires a revocation list, short TTLs, or a token version. |
+| Payload size on each request     | Small (32 to 64 bytes).                                    | Large (500 bytes to several KB, depending on claims).            |
+| Cross-service / cross-domain     | Requires a shared session store.                            | Works out of the box; token travels with the request.            |
+| Storage requirement              | Session store (Redis / DB). Extra ops cost.                 | None beyond the signing key.                                     |
+| Scaling model                    | Stateless app servers, stateful session store.              | Fully stateless.                                                 |
+| Best fit                         | Traditional web apps, single-domain, revocation critical (banking, healthcare). | SPAs + APIs, microservices, third-party integrations, mobile.    |
+| Bad fit                          | Massive scale-out where session store becomes a bottleneck. | Anything requiring instant revocation.                           |
+
+Two things worth calling out:
+
+**"Always JWT" is a fashion.** JWTs are not more modern than sessions. They are a different design point that happens to fit the SPA + microservices era better than the traditional web app. If you are building a web app in Rails or Django or Laravel, server-side sessions are almost certainly the right answer. If you are building a mobile app that talks to a Go microservice mesh, JWTs make sense.
+
+**"Just use JWTs for everything" is a failure mode.** The most common bug in JWT-based systems is that when a user changes their password or gets fired, their existing tokens remain valid until they expire. If your JWT has a 24-hour TTL and someone is compromised, you have a 24-hour window where the attacker holds a valid token you cannot invalidate. That is fine for a hobby project, catastrophic for a payments system.
+
+The pattern that works well: **short-lived JWTs (5 to 15 minutes) plus a refresh token backed by a server-side store**. You get most of the statelessness benefit of JWTs plus most of the revocability benefit of sessions. See Section 4.
+
+## Section 3: OAuth 2.1 Grants, and Which to Actually Use in 2026
+
+OAuth is not authentication. OAuth is a framework for delegating authorization, most commonly used to let one system access another on a user's behalf. It's often paired with OpenID Connect (OIDC), which adds an identity layer on top so the delegated system also knows who the user is.
+
+OAuth 2.1 (the modern consolidation of OAuth 2.0's best practices) has narrowed the field. Only a few grant types are still recommended.
+
+| Grant Type                       | Use When                                                    | Notes                                                        |
+| -------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------ |
+| **Authorization Code + PKCE**    | Any user-facing app: web, mobile, SPA, desktop.              | The default. PKCE (Proof Key for Code Exchange) protects against interception even without a client secret. Required for public clients. |
+| **Client Credentials**           | Service-to-service (no user involved).                       | The client authenticates itself with a client ID and secret and receives a token. No user context. |
+| **Device Code**                  | Devices with no browser (smart TVs, CLIs, IoT setup).        | User authenticates on a separate device using a short code. |
+| **Refresh Token**                | Any flow that issues an access token.                        | Not a standalone grant; used to obtain a new access token when the old one expires. Should always rotate (see Section 4). |
+| ~~Implicit~~ (deprecated)        | Do not use.                                                  | Original SPA flow. Replaced by Authorization Code + PKCE.    |
+| ~~Resource Owner Password~~ (deprecated) | Do not use.                                          | Client collects the user's password directly. Defeats most of the point of OAuth. |
+
+**If you are building a new app in 2026, the answer is almost always Authorization Code + PKCE for user login, and Client Credentials for service-to-service.** Everything else is a specialized case.
+
+OIDC sits on top of OAuth and adds:
+- An `id_token` (a JWT) that identifies the user to your app.
+- A `/userinfo` endpoint the client can call to get user profile data.
+- Standard claim names (`sub`, `email`, `name`, `email_verified`, etc.).
+
+Use OIDC when you want authentication (login), not just authorization. Most managed identity providers (Auth0, Okta, Google, Microsoft Entra) speak OIDC. Building your own OIDC provider is possible but rarely worth it.
+
+## Section 4: Token Lifecycle, and Why Rotation Matters
+
+The token strategy that has emerged as the industry standard for OAuth-based auth:
+
+- **Access token**: JWT, TTL 5 to 15 minutes, sent on every API request as `Authorization: Bearer <token>`.
+- **Refresh token**: opaque string, TTL days to weeks, stored in an HttpOnly Secure cookie or in a secure keychain on mobile. Used only to request a new access token.
+- **Refresh token rotation**: every time the refresh token is used, the server issues a NEW refresh token and invalidates the old one. Single-use.
+- **Reuse detection**: if a refresh token is presented that has already been used, the server invalidates the entire token family (all refresh tokens issued from the same original login). This detects and mitigates refresh token theft.
+- **Absolute vs sliding expiration**: absolute means "this refresh token expires N days after issue, no extensions." Sliding means "this refresh token expires N days after last use." Absolute is safer; sliding is more user-friendly. Many teams use both (sliding within an absolute cap).
+
+The refresh rotation flow, expressed as pseudo-logic:
+
+```typescript
+async function exchangeRefreshToken(presentedRefreshToken: string) {
+  const stored = await refreshTokenStore.find(presentedRefreshToken);
+
+  if (!stored) {
+    throw new UnauthorizedError('unknown refresh token');
+  }
+
+  if (stored.usedAt !== null) {
+    await refreshTokenStore.invalidateFamily(stored.familyId);
+    await auditLog.warn('refresh_token_reuse_detected', { familyId: stored.familyId });
+    throw new UnauthorizedError('refresh token replay detected');
+  }
+
+  if (stored.expiresAt < new Date()) {
+    throw new UnauthorizedError('refresh token expired');
+  }
+
+  await refreshTokenStore.markUsed(presentedRefreshToken);
+  const newRefreshToken = await refreshTokenStore.issue({
+    userId: stored.userId,
+    familyId: stored.familyId,
+    expiresAt: computeNewExpiration(stored),
+  });
+
+  const newAccessToken = await accessTokenIssuer.issue({
+    userId: stored.userId,
+    scopes: stored.scopes,
+    ttlSeconds: 900,
+  });
+
+  return { accessToken: newAccessToken, refreshToken: newRefreshToken };
+}
+```
+
+The reuse-detection line is the important one. If an attacker steals a refresh token from a compromised device and the legitimate user has since rotated (or vice versa), one of the two token presentations will be a reuse of an already-used token. The system detects the collision and invalidates the whole family, forcing both parties to log in again. The user's next login is annoying; the alternative is the attacker retaining access indefinitely.
+
+The reference for all of this is [RFC 6749](https://datatracker.ietf.org/doc/html/rfc6749), [RFC 6750](https://datatracker.ietf.org/doc/html/rfc6750), and the OAuth 2.1 draft. Read them once, not because you will implement them by hand, but because you should recognize when your library is doing the wrong thing.
+
+## Section 5: Authorization Models, Beyond If-Statements
+
+Once you have an authenticated user, the question is: what are they allowed to do? Three models scale, and the answer depends on your product's data model.
+
+**RBAC (Role-Based Access Control).** Users get roles (admin, editor, viewer), roles get permissions (`can_edit_users`, `can_delete_posts`). Check permissions on every action. This is what most apps ship with, and it works for a long time.
+
+- Simple, easy to audit.
+- Struggles with fine-grained rules ("this user can edit posts they created but not posts others created").
+- Role explosion happens when you need per-resource or per-context rules.
+
+**ABAC (Attribute-Based Access Control).** Authorization decisions are policies evaluated against attributes of the subject, the action, the resource, and the environment. Policies live in a policy engine like [OPA (Open Policy Agent)](https://www.openpolicyagent.org/) or a custom evaluator.
+
+- Handles fine-grained rules cleanly.
+- Policy engine is a runtime dependency; needs its own tooling and testing.
+- Better for compliance-heavy domains (healthcare, finance, government).
+
+**ReBAC (Relationship-Based Access Control).** Authorization decisions are computed by walking a graph of relationships between subjects and resources. Google's [Zanzibar paper](https://research.google/pubs/pub48190/) is the canonical reference, and [SpiceDB](https://authzed.com/) and [OpenFGA](https://openfga.dev/) are open-source implementations.
+
+- Handles complex sharing scenarios natively ("Alice's manager's team can view this doc").
+- Runtime cost is higher (graph traversal per check).
+- Best for products where sharing and hierarchy are core (Google Docs, Notion, GitHub).
+
+| Model  | Best fit                                          | Wrong fit                                   | Storage / evaluation cost                     |
+| ------ | ------------------------------------------------- | ------------------------------------------- | --------------------------------------------- |
+| RBAC   | Most apps, especially early stage.                | Fine-grained per-resource permissions.       | Cheap. Roles and permissions in your database. |
+| ABAC   | Compliance-heavy, complex business rules.         | Simple apps (over-engineered).              | Policy engine + attribute lookups per check.   |
+| ReBAC  | Sharing and hierarchy are core product concepts.  | Simple RBAC would work.                      | Graph traversal per check; needs dedicated service. |
+
+Start with RBAC. Migrate to ABAC or ReBAC when RBAC breaks. Do not start with ReBAC unless your product is fundamentally about sharing.
+
+## Section 6: Common Leak Patterns That Keep Showing Up
+
+The failure modes below appear in real breach postmortems every year. Every one of them is preventable at design time.
+
+**Tokens stored in localStorage.** Any XSS vulnerability instantly steals every user's tokens. LocalStorage is accessible from JavaScript, and JavaScript is exactly what an XSS payload runs as. Use HttpOnly Secure cookies for browser-based auth. If you need a token in JS for API calls, use short-lived access tokens fetched via a first-party endpoint that reads the HttpOnly refresh cookie.
+
+**Missing cookie flags.** Every auth cookie must be:
+- `HttpOnly`. Not accessible to JS.
+- `Secure`. Only sent over HTTPS.
+- `SameSite=Lax` (or `Strict` for maximum protection). Prevents CSRF.
+- `__Host-` prefix. Pins the cookie to your exact domain and path.
+
+Missing any of these is a bug. `SameSite=None` is only for third-party embedding scenarios; if you do not know why you need it, you do not need it.
+
+**JWT `alg: none`.** The JWT spec includes an unauthenticated algorithm. Some libraries historically accepted tokens signed with `alg: none`, which meant an attacker could forge any token by setting the algorithm to `none` and providing no signature. Modern libraries have fixed this; verify yours has, and always specify the exact algorithms your app accepts.
+
+**JWT algorithm confusion (HS256 vs RS256).** If your verifier accepts either an HMAC-signed token (HS256, uses a shared secret) or an RSA-signed token (RS256, uses a keypair), an attacker can take the public RSA key (which is public by design) and use it as the HMAC secret. The token verifies. Explicitly pin the algorithm in your verifier.
+
+**Missing audience validation.** Every JWT should have an `aud` (audience) claim identifying which service the token was minted for. If service A accepts a token minted for service B, an attacker can use their legitimately-obtained token for one service to access another. Verify the `aud` claim matches your service identifier.
+
+**Tokens in URLs.** Any URL containing a token gets logged everywhere: web server access logs, CDN logs, browser history, referrer headers, screenshots in Slack. Tokens go in headers or cookies. Never in URLs.
+
+**Password reset tokens with no expiration.** The password reset flow is the largest single attack surface in most apps because it bypasses password auth entirely. Reset tokens must be single-use, expire in 15 to 60 minutes, be tied to the specific account, be invalidated on any password change, and be sent through a trusted channel (email or SMS, but SMS is less trustworthy).
+
+**Session fixation.** If your app accepts a session ID from a URL parameter or from a client-set cookie before login, an attacker can trick a user into logging in with a session ID the attacker already knows. Always issue a fresh session ID on login, never trust a client-provided one.
+
+**Rate limiting missing on auth endpoints.** Login endpoints, password reset, MFA verification, and OAuth callbacks must all be rate-limited by IP, by account, and (ideally) by client fingerprint. Credential-stuffing attacks assume no rate limiting and try 10,000 credentials per second. Basic per-IP + per-account rate limiting stops most of them.
+
+**No session invalidation on password change.** When a user changes their password, all existing sessions and refresh tokens should be invalidated. Otherwise a password change does nothing to lock out an attacker who already has a session.
+
+**Secrets in git.** JWT signing keys, database passwords, third-party API secrets. Once committed to git, they are compromised even if you rebase them out (they may be cached in mirrors, in CI logs, in forks). Rotate immediately if you find one. Use a secret manager (AWS Secrets Manager, GCP Secret Manager, HashiCorp Vault, doppler, 1Password Secrets) from day one.
+
+## Section 7: Service-to-Service Auth
+
+User auth is only half the story. In a microservices system, service A calls service B, and B needs to know two things: (1) is the caller allowed to make this call, and (2) which user is this request acting on behalf of.
+
+Three patterns dominate:
+
+**Signed service tokens (JWT with Client Credentials grant).** Service A obtains a JWT from an internal identity provider using client credentials. Service B validates the signature and audience. This works with any HTTP transport, is easy to debug (tokens are human-readable), and integrates with your existing OAuth infrastructure.
+
+**mTLS (mutual TLS).** Both sides present certificates during the TLS handshake. The certificate identifies the calling service. This works without HTTP-layer tokens, is very hard to forge, and terminates authentication at the transport layer. It requires certificate lifecycle management (issuance, rotation, revocation), which is a real operational cost.
+
+**SPIFFE / SPIRE.** An identity framework that combines mTLS with a workload-attestation mechanism. Every service gets a SPIFFE ID like `spiffe://example.com/payments/api`. Certificates are short-lived and auto-rotated. Complex to set up; excellent once running.
+
+For user-context propagation across service chains: never trust a downstream service's claim about "who the user is" unless the claim is cryptographically verifiable. Pass the user's original token (or a service-signed derivative of it) through every hop, and verify at every hop. Do not pass a plain `user_id` header; a compromised or misconfigured service could set that header to any value.
+
+## Section 8: Managed Auth vs DIY
+
+Every team eventually decides: use a managed identity provider or build it yourself. Both are defensible; the wrong call is expensive.
+
+| Option                | Best fit                                                     | Wrong fit                                        | Time to first login | Lock-in |
+| --------------------- | ------------------------------------------------------------ | ------------------------------------------------ | ------------------- | ------- |
+| **Auth0 / Okta**      | B2B SaaS, enterprise customers needing SAML/SSO.             | High-volume B2C at scale (pricing gets brutal).  | Hours to days.       | High.   |
+| **Clerk**             | B2C SaaS with modern UI expectations, React-heavy stack.     | Non-web workloads, deep customization needs.     | Hours.               | High.   |
+| **WorkOS**            | B2B needing SSO / SAML / SCIM plumbing without ripping through Okta pricing. | Consumer auth.                                   | Days.                | Medium. |
+| **AWS Cognito**       | AWS-native shops, cost-sensitive at scale.                    | Best-in-class DX. Cognito is functional but rough. | Days to weeks.       | High.   |
+| **Supabase Auth / Firebase Auth** | Small teams shipping fast on the vendor's stack.  | Migrating off later.                             | Hours.               | Medium. |
+| **Keycloak (self-hosted)** | Compliance requirements that forbid SaaS, or truly custom identity models. | Small teams (Keycloak is a real operational commitment). | Days.                | Low.    |
+| **DIY**               | You are building an identity product itself. Otherwise: rarely. | Anything else. Do not build your own OAuth server unless auth is your business. | Weeks to months.     | None.   |
+
+The pattern I default to for a small team building a new product: **use a managed provider for the first year, evaluate migration only if pricing or compliance forces you.** Auth is a large, boring, mission-critical surface. Vendors have spent years building the pieces you would spend months on. Their bill is usually less than the salary of the engineer you would need to maintain your own.
+
+The pattern I default to for a large team with real compliance requirements: **Keycloak, or a real IAM platform, funded as a team.** At that scale, "the auth team" is a real team with a real budget. The vendors' bills become material and the compliance controls become non-negotiable.
+
+The pattern that rarely works: **DIY OAuth server for a normal product team.** Every team that goes this way underestimates it by 5x. Every one of them eventually migrates to a managed provider or hires an auth team. Save yourself the round trip.
+
+## Prompting an Auth Design, Not an "Add JWT" Snippet
+
+Ask AI "how should I add auth to my app?" and you get a generic Passport.js snippet or a JWT tutorial that ignores your product's actual identity model. Not useful.
+
+**Weak prompt (produces boilerplate):**
+
+> How should I add authentication to my app?
+
+**Structured prompt (produces a design):**
+
+> **Role:** Security-minded backend architect designing an auth system.
+> **Context:** Product is [description]. Client types are [web SPA / mobile / desktop / CLI / server-to-server]. Identity source is [our own DB / SSO from Google/Microsoft / social login / mix]. Compliance requirements: [GDPR / HIPAA / SOC 2 / none]. Team size: [X]. Time to first login target: [Y].
+> **Task:** Propose the auth design in four parts: (1) the identity model, (2) the authentication mechanism per client type (session vs JWT vs OAuth grant), (3) the token lifecycle (access TTL, refresh strategy, revocation approach), (4) the authorization model (RBAC / ABAC / ReBAC) and where policy is evaluated. For each choice, list the specific leak patterns it defends against and the ones it does not.
+> **Constraint:** Do not propose DIY OAuth server implementation. Do not propose storing tokens in localStorage. Explicitly name each cookie flag required and each JWT claim required. If you recommend a managed provider, name it.
+
+The last constraint is where the value lives. Most auth advice on the internet is written for a hobby project; that prompt forces the model to design for production.
+
+## The Rule Worth Posting Above Your Desk
+
+**Auth failures are the ones you find out about last and pay for the most.**
+
+Every auth choice in this post has a defensible answer for a specific product. The wrong move is not picking sessions when JWTs were better, or picking RBAC when ABAC was better; those are recoverable. The wrong move is thinking auth is a solved problem you can copy from a tutorial. It isn't, and every team that treats it that way eventually appears in a breach notification email.
+
+Read the RFCs at least once. Pick a managed provider unless you have a reason not to. Rotate your refresh tokens. Verify your cookie flags. Rate-limit your login endpoint. Assume every design decision you skip is a line item in someone's next postmortem.
+
+Then, when a peer or a hire asks "how do I add auth to this," you have a real answer instead of a Stack Overflow link. That is what senior looks like on this specific surface.
