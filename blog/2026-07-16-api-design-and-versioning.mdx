@@ -1,0 +1,249 @@
+---
+title: "How I Build: API Design and Versioning, Beginner to Advanced, and the Eight Ways You Only Think Your API Is Safe"
+authors: [balangyaoejuspher]
+tags: [architecture, standards, tech-stack]
+date: 2026-07-16
+slug: /api-design-and-versioning
+---
+
+Every team that has ever broken production has, at some point earlier, said the words "our API is safe." A colleague explained why. There were docs. There were tests. There was a version number. There was a plan.
+
+Then a consumer broke, or a client crashed, or a partner escalated, and the postmortem said the same sentence every time: "We thought we were safe."
+
+This post is API design and versioning laid out from beginner to advanced, with a specific focus on the eight "we're safe" traps that show up in real incidents. If you write APIs, own APIs, or depend on APIs someone else owns, some of this applies to you. All of it applies if you also change APIs after real users are on them.
+
+{/* truncate */}
+
+## Section 1: The Vocabulary You Need Before Anything Else
+
+If you're new to API design, learn these five terms. If you're not new, skim to make sure your team's definitions match.
+
+**API contract.** The promise your API makes to its callers about what requests it accepts, what responses it returns, and what errors it produces. The contract is not "the OpenAPI file." The contract is what the code actually does. When the two disagree, the code wins, which is exactly the problem.
+
+**Breaking change.** Any change that would cause an existing caller to malfunction. Removing a field. Renaming a field. Changing a field's type. Making an optional request field required. Adding a new required response field the caller cannot handle. Changing an HTTP status code semantics. Tightening validation. These all break callers who haven't been updated.
+
+**Non-breaking change.** Anything that adds capability without changing existing behavior. New endpoints. New optional request fields. New optional response fields (if the caller ignores unknown fields). New enum values that existing callers already handle as unknown.
+
+**Backward compatibility.** A new version of the server works with an old client. Almost always the goal.
+
+**Forward compatibility.** An old version of the server works with a new client. Rarer to design for, but important for mobile apps where the client updates before the server.
+
+**Deprecation.** A public statement that a field or endpoint will be removed in a future version, with a target date. Deprecation is a *warning*, not an *enforcement*.
+
+**Sunset.** The actual removal. This is when the endpoint returns 410 Gone or the field disappears from responses.
+
+If your team can define all of these in the same words, half of the arguments about API changes disappear.
+
+## Section 2: Pick the Right API Style
+
+Before we get into versioning, pick a style. Most teams inherit one, and that's fine, but new services deserve a real decision.
+
+| Style          | Best fit                                                        | Wrong fit                                              | Common failure modes                                        |
+| -------------- | --------------------------------------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------- |
+| REST + JSON    | Public APIs, CRUD-heavy resources, wide client audience.         | Real-time streaming, high-frequency internal calls.    | Under/overfetching, non-obvious status codes, hand-written docs that drift. |
+| GraphQL        | Complex client-driven queries, mobile clients with narrow bandwidth. | Simple CRUD, small teams (schema complexity dominates). | N+1 resolvers, unbounded query cost, cache invalidation.    |
+| gRPC / Protobuf | Internal service-to-service, low-latency, strongly typed.        | Public APIs consumed by browsers or third parties.     | Poor browser support, tooling learning curve, weaker HTTP semantics. |
+| Async / event-driven (Kafka, SQS, EventBridge) | Decoupled workflows, high-throughput ingest, integration between systems. | Request/response semantics your product actually needs. | Ordering, at-least-once vs exactly-once confusion, contract drift. |
+
+The default for a new public API from a small team: **REST + JSON with strict schema validation**. Boring, well-understood, tooling everywhere. Deviate only when you can name the specific reason.
+
+## Section 3: Versioning Strategies
+
+Once your API has real callers, you cannot change it in place without breaking them. Versioning is how you evolve.
+
+| Strategy                        | How it looks                                                  | Pros                                              | Cons                                              |
+| ------------------------------- | ------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------- |
+| URL path                        | `/v1/orders` / `/v2/orders`                                    | Obvious, easy to route, cache-friendly.            | New version means new URLs everywhere.             |
+| Custom media type               | `Accept: application/vnd.myapi.v2+json`                        | URL stays clean; version negotiation feels HTTP-native. | Poor tooling support; callers forget the header.   |
+| Header                          | `X-API-Version: 2` or `Accept-Version: 2026-07-15`            | Compact, keeps URLs stable.                        | Non-obvious; harder to debug from logs.            |
+| Query parameter                 | `/orders?v=2`                                                  | Trivial to set from clients that can't send headers. | Feels dirty; usually a workaround, not a strategy.  |
+| Date-based (Stripe-style)       | `Stripe-Version: 2024-06-20` per request                       | Client pins a specific date; server maintains all older versions. | Server complexity is real; only worth it at Stripe scale. |
+| Evolve-in-place (additive-only) | No version at all; only add new fields, never break old ones.  | Simplest for the caller. No migration ever needed. | Requires strict discipline forever. One breaking change and you have chaos. |
+
+The default for a new API: **URL path versioning starting at `/v1`**. It's the easiest to reason about, the easiest to route, and the easiest to explain to a caller.
+
+The advanced pattern for products with sophisticated integrations: **date-based versioning à la Stripe**. Every caller pins to a specific date, the server supports all dates in a window (usually a year), and breaking changes ship as new dates. It's expensive to build and maintain, but it's the only strategy that lets you keep evolving without ever asking any caller to migrate on your schedule. Do not adopt this unless you have a real reason.
+
+## Section 4: The Eight Ways You Only Think Your API Is Safe
+
+This is the part of the post most teams need. Every one of these traps has a specific "we're safe because [X]" claim that turns out to be false in a specific way.
+
+### Trap 1: "We have TypeScript, our API is type-safe"
+
+**The claim.** The server is written in TypeScript. The client is written in TypeScript. Types flow through both. Therefore the API is safe.
+
+**Why it's false.** Types disappear at compile time. At runtime, the server returns whatever the code produces. The client trusts whatever it receives. If the server changes a field's type at runtime (due to a DB migration, a data glitch, or a new code path), the client crashes at the property access, not at compile time.
+
+**The fix.** Validate at the boundary, at runtime, using a schema library like [zod](https://zod.dev/), [io-ts](https://github.com/gcanti/io-ts), [valibot](https://valibot.dev/), or generated code from OpenAPI / Protobuf / gRPC schemas. Types are a design tool; schemas are a runtime guarantee. You need both.
+
+### Trap 2: "We have OpenAPI docs, consumers know what to expect"
+
+**The claim.** There's an OpenAPI spec. It's hosted at `/docs`. Consumers can read it.
+
+**Why it's false.** Docs drift from code. Every team maintains the spec by hand at first, ships a change without updating the spec, and the spec is wrong within a month. Consumers who trust the spec build against a fantasy version of your API and break as soon as they hit reality.
+
+**The fix.** Generate the spec from code (annotation-based, like [zod-to-openapi](https://github.com/asteasolutions/zod-to-openapi) or [tsoa](https://tsoa-community.github.io/docs/) for Node, [drf-spectacular](https://drf-spectacular.readthedocs.io/) for Django, [FastAPI](https://fastapi.tiangolo.com/) for Python) or generate code from the spec (spec-first). Never maintain both by hand. Add a CI check that fails if the generated spec drifts from the committed spec.
+
+### Trap 3: "We versioned it. Consumers can migrate on their own timeline."
+
+**The claim.** We shipped v2. v1 still works. Consumers migrate when they're ready.
+
+**Why it's false.** "We versioned it" often means a v2 was added while v1 continues to be modified. Or v2 is subtly incompatible with v1 in a way the release notes didn't call out. Or v1 was never really frozen; a bug fix in v1 changed behavior a consumer was depending on. Version numbers are a promise. Most teams break the promise without realizing.
+
+**The fix.** When you cut a new version, v1 becomes read-only. Bug fixes to v1 must not change caller-visible behavior. Every change to v1 goes through the same breaking-change review as a hypothetical v3 would. If a caller sees behavior change on a version they pinned, that's an incident.
+
+### Trap 4: "We deprecated v1 six months ago"
+
+**The claim.** We added a `Deprecation` header six months ago and updated the docs. Callers had plenty of time.
+
+**Why it's false.** Nobody reads deprecation headers unless something is already broken. Docs updates never reach the teams still hitting v1. Warning logs from the client library get ignored. Six months later, you remove v1 and 40% of callers break.
+
+**The fix.** Deprecation is a *process*, not a *header*. Every deprecated endpoint needs:
+
+- A `Sunset` header ([RFC 8594](https://datatracker.ietf.org/doc/html/rfc8594)) with the exact removal date.
+- A `Deprecation` header with the current date.
+- A `Link` header pointing to the migration guide.
+- Server-side telemetry: per-caller volume on the deprecated endpoint, tracked weekly.
+- Individual outreach to the top 10 callers by volume, one to three months before sunset.
+- A hard cutoff date that doesn't slip. Slipping trains callers to ignore the next deprecation.
+
+### Trap 5: "Consumers said they updated"
+
+**The claim.** We asked the consumer team if they're on v2. They said yes.
+
+**Why it's false.** "The team" migrated. One legacy service the team doesn't remember exists is still on v1. Or two services migrated; the third was owned by an engineer who left. Or the migration was rolled out to production but the CI environment still hits v1 through a hardcoded URL. "The team said they updated" is not the same as "no production traffic hits v1."
+
+**The fix.** Server-side telemetry per version, per caller, per endpoint. Migration is measured, not declared. The dashboard is the source of truth, not the Slack message.
+
+### Trap 6: "Our API tests pass"
+
+**The claim.** We have integration tests. They all pass. The API is safe.
+
+**Why it's false.** Most API test suites cover the happy path. Real callers hit:
+
+- Null values in optional fields (does the parser handle it?).
+- Missing optional response fields (does the client have a default?).
+- Extra fields in responses (does the parser reject or ignore?).
+- Empty arrays vs missing arrays vs `null` arrays.
+- String encoding edge cases (unicode, emojis, RTL text).
+- Every error response, not just success.
+- Rate-limit responses and their headers.
+- Retries after 5xx responses.
+
+**The fix.** Contract tests (see Section 5) that assert both success and failure paths. Fuzz tests on request payloads. Explicit tests for each documented error response. And a rule that every new endpoint ships with at least three failure-path tests before merge.
+
+### Trap 7: "We only added an optional field"
+
+**The claim.** The change is backward-compatible. It's an optional field.
+
+**Why it's false.** Optional-to-required is one of the most common invisible breaking changes. You add `discount_code` as optional in v1.2. Nobody sets it. Six months later, you flip it to required because your business logic depends on it, and every existing client breaks on the next PATCH. Or you add a new optional response field, and a client that was doing strict validation (rejecting unknown fields) breaks the moment your response contains it.
+
+**The fix.** "Additive-only" means you can never later flip an added field to required, and you have to assume clients might do strict validation. Every server response must be a superset of every previous response for the same endpoint. Every request must accept the superset of all historical request shapes. Once the field is out, its constraints are locked in.
+
+### Trap 8: "It's just JSON, JSON is flexible"
+
+**The claim.** JSON is schemaless. We can just add and remove fields as needed.
+
+**Why it's false.** "Schemaless" means "the schema lives in the head of every developer, and every one of those heads has a different version." Two endpoints return the same concept in slightly different shapes. A field is a string in one place and a number in another. A date is ISO 8601 here and a Unix timestamp there. Everyone downstream has to normalize, and every normalizer has bugs.
+
+**The fix.** A shared schema definition (Protobuf, JSON Schema, OpenAPI components, or a shared TypeScript types package) that every producer and consumer uses. The schema is the source of truth. JSON is the wire format, not the design.
+
+## Section 5: Contract Testing, When It Works and When It Doesn't
+
+Contract testing is the practice of writing tests that describe the API contract from the *consumer's* perspective, then running those tests in the *producer's* CI. If the producer breaks a contract a consumer depends on, the producer's build fails.
+
+The canonical tool is [Pact](https://pact.io/). The workflow:
+
+1. Consumer team writes a test that describes what they expect from the API (an example request and the shape of the response they need).
+2. Pact records this as a contract file (JSON).
+3. Contract is published to a Pact broker.
+4. Producer's CI runs "verify" against the broker, replaying every consumer's expectations against the current producer code.
+5. If any expectation fails, the producer's build fails, with the exact consumer named.
+
+**When it works.** Producer and consumer teams both invest in it. Contract files are treated as first-class artifacts, version-controlled, reviewed on PRs. New consumers add their contracts as part of onboarding.
+
+**When it doesn't.** Only one team invests. The producer sees contracts as noise and disables them under deadline pressure. Or contracts describe only the happy path (because writing failure-path contracts is more work). Or the consumer's contract is generated from the current producer response, which means "the contract passes" is tautological.
+
+Contract testing is not free. It requires cross-team discipline. Deploy it when your service has three or more external consumers and the cost of breaking any of them is real. Skip it when you have one internal consumer and can just talk to them.
+
+For event-driven systems, the equivalent is a **schema registry** (Confluent Schema Registry, Buf Schema Registry, or a homegrown JSON Schema store) that enforces backward compatibility at publish time. Every schema change is checked against every historical version of every consumer's expectations before the schema is accepted.
+
+## Section 6: Deprecation and Sunset, Done Right
+
+The advanced version of the "we deprecated it" trap fix. Complete process from announcement to removal:
+
+```
+Day 0    Announce deprecation. Blog post, changelog, direct notice to top callers.
+         Add `Deprecation: true` and `Sunset: <ISO date>` headers to every response.
+         Add `Link: <migration-guide-url>; rel="deprecation"` header.
+         Configure telemetry to track per-caller volume on the deprecated endpoint.
+
+Day 30   First status report. Top callers by volume: send individual DMs / emails.
+
+Day 60   Second status report. If volume has not dropped meaningfully, escalate.
+
+Day 90   Third status report. Ask top holdouts for a written migration date.
+
+Day 150  Change the response body to include a `warning` field on every call
+         to a deprecated endpoint. Some callers surface this to users.
+
+Day 180  Sunset day. Return 410 Gone. Include a body pointing at the migration guide.
+         Never remove without returning 410; a 404 masks the reason.
+
+Day 210  Remove the code entirely.
+```
+
+The dates are flexible; the discipline is not. Every deprecation that survives contact with a real caller has a paper trail like this. Every deprecation that doesn't leaks into an incident on Day 180.
+
+## Section 7: Schema Evolution Rules
+
+For the advanced case, when you're maintaining a schema over years across multiple consumers, the rules that keep you sane:
+
+- **Additive-only in the field set.** Every new field is optional and additive. Existing fields never change type or become required.
+- **Never remove a field.** Deprecate it, sunset it, then remove only after every caller has moved. Even then, wait an extra release cycle.
+- **Enum values are additive too.** You can add new enum values, but existing values keep their meaning. Consumers must handle unknown enum values as a distinct "unknown" case; document this expectation explicitly.
+- **Union types for polymorphism, not bag-of-optional-fields.** If a response can be one of several shapes, model it as a tagged union (`type: "success" | "failure"` with a discriminator), not `data: object | null; error: object | null`.
+- **Backward vs forward vs full compatibility semantics** (relevant for event schemas):
+  - **Backward-compatible**: new schema can read old data. Consumers upgrade first.
+  - **Forward-compatible**: old schema can read new data. Producers upgrade first.
+  - **Fully compatible**: both directions. Requires strict additive-only discipline.
+
+Most teams need backward compatibility only. Full compatibility is expensive and usually not worth it.
+
+## Section 8: API Design Anti-Patterns
+
+Not comprehensive; the ones I keep seeing in code review:
+
+- **Chatty APIs.** N+1 requests where one endpoint could return the whole resource. Solve at design time, not with client-side caching.
+- **Anemic resources.** `/user/123` returns `{ id: 123, name: "Alice" }` and nothing else. The client always needs the org, the roles, the last-login timestamp, and the client makes four more requests. Design for the common case.
+- **Overfetching.** The opposite trap. `/user/123` returns 500 fields. The client only needs three. Bandwidth waste on every request. Consider field selection (`?fields=id,name,email`) or GraphQL for genuinely varied consumers.
+- **Non-idempotent write endpoints.** `POST /transfer` that creates a duplicate transfer on retry. Every write endpoint should accept an idempotency key (client-generated UUID) and dedupe server-side. See the [BullMQ resilience post](/real-world-resilience-bullmq-and-contracts) for the pattern.
+- **Missing pagination.** `GET /orders` returns every order ever placed. Client crashes on OOM. Every list endpoint needs pagination from day one, with a documented default and max.
+- **Rate limiting without headers.** The server returns 429 with no `X-RateLimit-Limit`, `X-RateLimit-Remaining`, or `Retry-After` header. Clients have no way to back off correctly.
+- **Undocumented status codes.** The endpoint returns 422 in a specific case that the docs don't mention. Consumers write handlers for 400 and 500, and 422 crashes them.
+- **Errors as strings, not codes.** `{"error": "user not found"}` is a UI string. `{"error": {"code": "USER_NOT_FOUND", "message": "user not found"}}` is machine-readable. Consumers can localize the message, program against the code.
+
+## Prompting an API Change Review, Not "Looks Good to Me"
+
+Ask AI to "review this API change" and you get style suggestions. Not useful for the breaking-change question that actually matters.
+
+**Weak prompt (produces style comments):**
+
+> Review this API change.
+
+**Structured prompt (produces a real classification):**
+
+> **Role:** API contract reviewer.
+> **Context:** The API currently at `/v1/[endpoint]` behaves as [current spec]. The proposed change is [diff or description]. Known active consumers: [list, or "unknown"].
+> **Task:** For every field-level, endpoint-level, and semantic change in the diff, classify it as: (a) additive non-breaking, (b) optional-to-required (invisible breaking), (c) removal (breaking), (d) type change (breaking), (e) validation tightening (breaking), (f) status-code semantic change (breaking), (g) enum-value addition (usually safe but not always). For each breaking change, name the specific consumer symptom that would result.
+> **Constraint:** Do not comment on style. Do not say "looks good." Every finding must map to a category and a consumer impact. If a change is safe, say why explicitly.
+
+That prompt turns "review" from a vibe into a classification. The output is something you can attach to the PR as evidence, not a summary you have to trust.
+
+## The Rule Worth Writing on the Whiteboard
+
+**A safe API is a state you maintain, not a state you reach.**
+
+Every "we're safe" claim from Section 4 was true the day someone said it. All of them became false when someone shipped a change without checking. Safety is the byproduct of running through the checklist every single time, forever. The moment the team stops running the checklist, safety decays.
+
+Which is why the smartest teams I have worked with don't say "we're safe." They say "here is what would have to break for us to be unsafe, and here is the automated check that catches it." Every "we're safe" claim in this post has an automated check attached to it. Build those, run those, trust those, and you can honestly answer the question. Anything less is a claim you cannot defend when a consumer walks in tomorrow with a broken build and asks you what happened.
