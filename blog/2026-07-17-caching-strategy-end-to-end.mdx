@@ -1,0 +1,390 @@
+---
+title: "How I Build: Caching Strategy End-to-End, Beginner to Advanced, and the Eight Traps That Turn Fast Systems Into Broken Ones"
+authors: [balangyaoejuspher]
+tags: [architecture, resiliency, standards]
+date: 2026-07-17
+slug: /caching-strategy-end-to-end
+---
+
+Cache is where systems get fast. It's also where they get subtly, expensively wrong. Every cache is a promise about consistency, and the developer who made the promise usually doesn't remember making it. Six months later, someone else is debugging why user Alice sees an old balance while user Bob sees the new one, and the answer is buried in three layers of TTLs nobody wrote down.
+
+This post is caching laid out from beginner to advanced, with the same "we're safe" trap framing that most caching guides skip. If you use a cache anywhere (browser, CDN, Redis, database query cache, in-memory map), some of this applies to you. All of it applies if you're the one on-call when it goes wrong.
+
+{/* truncate */}
+
+## Section 1: The Vocabulary You Need Before Anything Else
+
+Learn these. They come up in every caching argument.
+
+**Cache.** A store of data kept close to where it's used, to make retrieval faster than fetching from the source of truth.
+
+**Cache hit / cache miss.** A hit is when the requested data is in the cache. A miss is when it isn't and you have to fetch from the source of truth and (usually) fill the cache.
+
+**Hit rate.** The percentage of requests served from cache. Higher is faster, but *which* requests hit and which miss matters more than the raw number (see Trap 5).
+
+**TTL (Time To Live).** How long a cached value is considered valid before it must be re-fetched. A 60-second TTL means the value can be up to 60 seconds stale.
+
+**Eviction.** The cache is full, so something has to go. LRU (least recently used), LFU (least frequently used), FIFO, and random are the common policies.
+
+**Invalidation.** Telling the cache "this value is now wrong, throw it away." Explicit invalidation is one of two famously hard problems in software, along with naming things.
+
+**Warm vs cold cache.** Warm means the cache already has the useful data loaded. Cold means it doesn't and every early request will miss.
+
+**Coherent vs eventually consistent vs stale.** Coherent = the cache always reflects the source. Eventually consistent = the cache converges to the source within some window. Stale = the cache is knowingly out of date, and that's acceptable for this data.
+
+If you can agree on these words with your team, half the caching arguments never happen.
+
+## Section 2: Where Caches Live
+
+Every real system has *many* caches, at every layer between the user and the database. Naming them is the first step to not being surprised by them.
+
+| Layer                          | Example                                  | What it caches                              | Who controls invalidation                |
+| ------------------------------ | ---------------------------------------- | ------------------------------------------- | ---------------------------------------- |
+| Browser cache                  | HTTP `Cache-Control` headers             | Static assets, API responses.               | Response headers you set on the server.   |
+| CDN                            | Cloudflare, Fastly, CloudFront            | Static assets, API responses at the edge.   | Purge API, `Cache-Control` headers.       |
+| Reverse proxy                  | Nginx, Varnish, HAProxy                   | Cached HTTP responses.                      | Config-driven or purge API.               |
+| Application in-memory          | Local `Map`, LRU cache, `node-cache`      | Per-process cached values.                  | The process; disappears on restart.       |
+| Distributed cache              | Redis, Memcached, DynamoDB DAX            | Shared cache across app instances.          | Explicit deletes, TTLs, versioned keys.   |
+| Database query cache           | MySQL's query cache (legacy), Postgres shared buffers | Recent query results.                | The database itself.                     |
+| Materialized views             | Postgres `MATERIALIZED VIEW`, Snowflake dynamic tables | Precomputed aggregations.       | Explicit refresh; sometimes scheduled.     |
+| ORM identity map / query cache | Prisma, SQLAlchemy, Hibernate             | Within-request query dedup.                 | End of request scope; not for you to invalidate. |
+
+Every one of these is a cache with its own TTL, its own invalidation model, and its own failure mode. When someone says "we cached it," ask *which layer*. The answers are radically different.
+
+## Section 3: Cache Patterns and Their Trade-offs
+
+Beyond "we put it in Redis," there are named patterns with different consistency and failure characteristics.
+
+**Cache-aside (lazy loading).** Application checks the cache. If miss, fetches from the source of truth, populates the cache, and returns. Simple, common, and the default in most codebases.
+
+```typescript
+async function getUser(id: string): Promise<User> {
+  const cached = await cache.get(`user:${id}`);
+  if (cached !== null) return cached;
+
+  const user = await db.users.findById(id);
+  await cache.set(`user:${id}`, user, { ttl: 300 });
+  return user;
+}
+```
+
+**Read-through.** The cache itself fetches from the source of truth on miss. The application only talks to the cache. Requires a smarter cache layer (or a library wrapping the cache).
+
+**Write-through.** Every write goes to the cache and to the source of truth synchronously. The cache is always coherent with the source, at the cost of write latency.
+
+**Write-behind (write-back).** Writes go to the cache first, then flush to the source of truth asynchronously in the background. Fast writes, but you can lose data if the cache dies before the flush.
+
+**Refresh-ahead.** The cache proactively refreshes entries before they expire, based on access patterns. Best for hot keys that would cause pain on expiration.
+
+| Pattern       | Read latency | Write latency | Data loss risk | Complexity | Best fit                          |
+| ------------- | ------------ | ------------- | -------------- | ---------- | --------------------------------- |
+| Cache-aside   | Miss = slow  | DB latency    | None           | Low        | Most read-heavy apps.             |
+| Read-through  | Miss = slow  | DB latency    | None           | Medium     | Same as cache-aside, better ergonomics. |
+| Write-through | Fast (usually) | Slow (both writes) | None      | Medium     | Write-heavy with read-heavy after. |
+| Write-behind  | Fast         | Fast          | Real (batched flush can fail) | High | High-throughput write with eventual persistence. |
+| Refresh-ahead | Always fast  | DB latency    | None           | High       | Hot keys with predictable access. |
+
+The default I reach for: **cache-aside**. Simple, obvious, easy to reason about. Only deviate when there's a specific reason (high write throughput, predictable hot keys, write-heavy workload).
+
+## Section 4: Cache Keys, the Boring Detail That Decides Everything
+
+Bad key design is the single most common cause of cache-related incidents I have seen. Get this right early, or spend years untangling it.
+
+Rules:
+
+**Namespace every key.** Prefix with the entity and the version of the schema. `user:v2:12345`, not just `12345`. When you change the schema, bump the version and old keys naturally expire. When you're debugging, you can `KEYS user:*` (in dev, never in prod) and see the shape at a glance.
+
+**Include tenant/scope in the key.** In a multi-tenant system, `user:v2:tenant-A:12345` is not the same key as `user:v2:tenant-B:12345`. Every cross-tenant leak I've seen came from forgetting this.
+
+**Make keys deterministic.** Given the same input, every service that hashes the same object must produce the same key. This means either using a canonical serialization or a well-defined key builder. `{"name":"Alice","age":30}` and `{"age":30,"name":"Alice"}` are the same object; hash them the same way.
+
+**Keep keys small.** Redis stores every key in memory. A million keys of 100 bytes = 100 MB just for keys. Use short prefixes, ID-only rather than full paths, no repeated info.
+
+**Never put PII in keys.** Keys are logged everywhere: metrics, slow-query logs, error traces, cache dashboards. A cache key with an email address is a GDPR incident waiting to happen. Use IDs.
+
+**Version the schema in the key, not the value.** When you change how a `User` object is stored, bump the version prefix (`user:v3:12345`). Old code reading `user:v2:*` keeps working during the migration; new code writes `user:v3:*`. When the deploy is done, `user:v2:*` naturally expires.
+
+The bad way I keep seeing:
+
+```
+user_12345
+Users_12345
+user:12345
+CACHE:user:12345
+user-12345
+```
+
+All in the same codebase. Different prefixes. Different casing. Some with version, some without. Each service invented its own convention. Cache hit rate is 0% because nobody hits each other's keys.
+
+The good way: **one key builder library, imported everywhere, tested.**
+
+```typescript
+export const cacheKeys = {
+  user: (id: string, tenantId: string) => `user:v2:${tenantId}:${id}`,
+  order: (id: string, tenantId: string) => `order:v1:${tenantId}:${id}`,
+  userOrders: (userId: string, tenantId: string) =>
+    `user_orders:v1:${tenantId}:${userId}`,
+};
+```
+
+One import. No stringly-typed keys anywhere else. Every service produces identical keys for identical data. This is the single highest-value refactor in most caching codebases.
+
+## Section 5: TTL, the Number Nobody Thinks About Long Enough
+
+TTL is where every caching design silently commits to a consistency policy. "One hour" is not an answer; it's a placeholder.
+
+Frame TTLs by asking: **how stale can this data be before a user is measurably harmed?**
+
+- Blog post content: minutes to hours. Nobody notices.
+- User profile displayed to others: minutes. If Alice renames herself, Bob seeing the old name for 5 minutes is fine.
+- Permission checks: seconds. A user revoked from a resource must lose access fast.
+- Financial balances: near zero, or use a different pattern (cache the *derivation*, not the *balance*).
+- Feature flag values: single-digit seconds. Flag changes propagate quickly.
+- CDN static assets: days or weeks with cache-busting URLs.
+
+Two TTL patterns worth knowing:
+
+**Jittered TTLs.** If you set every cache entry to 60-second TTL and they all fill at the same time, they all expire at the same time, and every miss hits the DB simultaneously. Add ±10% jitter (`ttl + random(-6s, +6s)`) to spread expiration.
+
+**Two-tier TTL.** Set a "soft" TTL (e.g., 60s) and a "hard" TTL (e.g., 300s). Between soft and hard, serve the stale value but trigger a background refresh (see stale-while-revalidate, Section 7). After hard, refuse to serve stale. Best of both worlds for read-heavy hot data.
+
+The default I reach for: **jittered TTL at the freshness bound + explicit invalidation on write for critical paths**. TTL as the backstop, invalidation as the primary. See next section.
+
+## Section 6: Invalidation, the Actually Hardest Problem
+
+TTL alone doesn't guarantee correctness; it guarantees an *upper bound on staleness*. If you need "user sees their own updates immediately," TTL is not enough.
+
+Strategies:
+
+**Explicit invalidation on write.** After a write to the source of truth, delete the corresponding cache key. Works if you own every write path. Breaks if a background job or another service writes and forgets to invalidate.
+
+**Versioned keys.** Include a version number in the key that changes on every write (`user:12345:v42`). Old cached versions age out naturally; readers always request the latest version. Requires a way to know the current version without hitting the cache (usually a small "version cache").
+
+**Event-driven invalidation.** Writes publish a change event to a pub/sub. Cache subscribers invalidate the affected keys. Handles the "different service wrote it" case, but adds infrastructure and its own failure modes.
+
+**Wait for TTL (implicit invalidation).** Don't invalidate; let the TTL expire. Simplest, cheapest, only works when staleness up to TTL is acceptable.
+
+**Write-through.** No invalidation problem; the cache is updated in the same transaction as the source. Works only for the write-through pattern.
+
+The pattern that actually holds in a distributed system:
+
+```typescript
+async function updateUser(id: string, data: UserPatch): Promise<User> {
+  const updated = await db.transaction(async (tx) => {
+    const user = await tx.users.update(id, data);
+    return user;
+  });
+
+  await cache.del(cacheKeys.user(id, tenantContext.id));
+  await eventBus.publish('user.updated', { id, tenantId: tenantContext.id });
+
+  return updated;
+}
+```
+
+Three important details:
+
+- **Delete happens after the DB commit succeeds.** If you delete first, a concurrent read could refill the cache with the pre-update value before your write commits, and the wrong value stays cached for the TTL.
+- **Delete, don't update.** Updating the cache in-place from the writer risks race conditions. Delete is idempotent and safe.
+- **Publish an event.** Other services or other regions can subscribe. Even if you don't need it today, you will.
+
+## Section 7: Stale-While-Revalidate and Stale-If-Error
+
+The killer feature most application caches ignore. Standard in HTTP (RFC 5861) and CDNs; underused in Redis / application layers.
+
+**stale-while-revalidate**: after TTL expires, return the stale value *anyway* while refreshing the cache in the background. Zero user-facing latency during refresh.
+
+**stale-if-error**: if the source of truth is unreachable, keep serving the stale value until it recovers. The cache becomes a resilience layer, not just a performance layer.
+
+Practical implementation with a two-tier TTL:
+
+```typescript
+async function getWithSwr<T>(key: string, fetchFn: () => Promise<T>): Promise<T> {
+  const entry = await cache.getEntry<T>(key);
+
+  if (entry === null) {
+    const fresh = await fetchFn();
+    await cache.set(key, fresh, { softTtl: 60, hardTtl: 3600 });
+    return fresh;
+  }
+
+  if (entry.age < entry.softTtl) {
+    return entry.value;
+  }
+
+  if (entry.age < entry.hardTtl) {
+    void refreshInBackground(key, fetchFn);
+    return entry.value;
+  }
+
+  const fresh = await fetchFn();
+  await cache.set(key, fresh, { softTtl: 60, hardTtl: 3600 });
+  return fresh;
+}
+```
+
+Reader always sees a value in one round-trip. Fresh data is loaded in the background. If the source is down between soft and hard TTL, users still get responses. Only after hard TTL does the reader take the full penalty of a source fetch.
+
+This one pattern eliminates most of the "cache miss = latency spike" problems teams try to solve with bigger caches.
+
+## Section 8: Thundering Herd, and How to Not Get Trampled
+
+Also called cache stampede or dogpile. The scenario: a hot cached key expires. Ten thousand concurrent requests all miss, all try to fetch from the source of truth, all try to fill the cache. The source of truth (probably your database) collapses under load it usually never sees.
+
+This is not hypothetical. Every team with a busy service and a Redis cache eventually watches this happen.
+
+Fixes, in increasing order of sophistication:
+
+**Singleflight / request coalescing.** When a request misses, first request per key acquires a mutex. Other concurrent misses on the same key wait for the first to finish, then read the newly-filled cache. Only one DB call per key per expiration.
+
+```typescript
+const inflight = new Map<string, Promise<unknown>>();
+
+async function getWithCoalescing<T>(key: string, fetchFn: () => Promise<T>): Promise<T> {
+  const cached = await cache.get<T>(key);
+  if (cached !== null) return cached;
+
+  const existing = inflight.get(key);
+  if (existing !== undefined) return existing as Promise<T>;
+
+  const promise = (async () => {
+    try {
+      const fresh = await fetchFn();
+      await cache.set(key, fresh, { ttl: 300 });
+      return fresh;
+    } finally {
+      inflight.delete(key);
+    }
+  })();
+
+  inflight.set(key, promise);
+  return promise;
+}
+```
+
+Per-process coalescing. For cross-process (i.e., across multiple app instances), use a distributed lock (Redis SETNX with lease) so only one instance in the fleet does the fetch.
+
+**Probabilistic early expiration.** Before hard TTL, some percentage of requesters proactively refresh the cache. Spreads the refresh cost over the TTL window instead of concentrating it at expiration.
+
+**Precomputed refresh.** For truly hot keys, don't rely on request-triggered refresh at all. Run a background job that refreshes the cache on a schedule.
+
+**Stale-while-revalidate.** From Section 7. The refresh happens in the background; only the *first* request past the soft TTL kicks it off (singleflight-style).
+
+The simplest starting point: **stale-while-revalidate + singleflight**. Together they eliminate ~95% of thundering herd scenarios in real workloads.
+
+## Section 9: The Eight "We're Safe" Traps
+
+The genuinely differentiated part of this post. Every one of these claims is common; every one is subtly wrong.
+
+### Trap 1: "We use Redis, we're fast"
+
+**The claim.** We put things in Redis, so the app is fast.
+
+**Why it's false.** Redis is fast, but a cache miss is a Redis round-trip *plus* a database round-trip *plus* a Redis write. If your hit rate is low, you added latency instead of removing it. And Redis itself has latency (typically 0.5 to 2 ms per operation), which is real if your service does 20 Redis calls per request.
+
+**The fix.** Measure hit rate per key namespace. If hit rate on a namespace is below 50%, that cache is probably hurting more than helping. Fix the access pattern or drop the cache. Also: use pipelining for multi-key reads, and batch when possible.
+
+### Trap 2: "We set a TTL"
+
+**The claim.** Cache entries expire after their TTL. Stale data is bounded.
+
+**Why it's false.** A TTL means "up to this stale, and no more." Users can see stale values for the entire TTL window. If TTL is 1 hour, a user who updates their profile can see the old value on someone else's page for another 55 minutes. "We set a TTL" is not a consistency story; it's a bound on inconsistency.
+
+**The fix.** Choose TTLs based on written business-tolerable staleness. Combine with explicit invalidation on write for anything user-visible. TTL is the backstop, not the primary.
+
+### Trap 3: "We invalidate on write"
+
+**The claim.** After every write, we delete the cached key. Data is fresh.
+
+**Why it's false.** In a distributed system, the delete happens on one node. Other nodes still see the old value in *their* local L1 cache (or a downstream replica of the distributed cache). Read-after-write on the same connection is fine; read-after-write on any *other* connection is a race.
+
+Also: if a concurrent read misses just before your delete, refills the cache from a stale replica, and finishes writing back after your delete, the stale value stays cached for the full TTL.
+
+**The fix.** Delete-after-commit (never before). Publish an invalidation event to a pub/sub for cross-node propagation. If you cannot afford this staleness window at all, use versioned keys instead of delete-based invalidation.
+
+### Trap 4: "Users won't notice stale data"
+
+**The claim.** The data doesn't change often. Users won't notice.
+
+**Why it's false.** Stale is a category, not a boolean. Some data is fine stale for a day (marketing copy). Some data is a bug at 1 second stale (permission checks, account balances). "Won't notice" is a claim about a specific piece of data, not about caching in general. Applying it globally is where account-takeover bugs come from.
+
+**The fix.** For every cached type, write a one-line staleness budget: "This may be up to N seconds stale." If N is smaller than your TTL, TTL alone is insufficient (see Trap 2). If the type is security-critical, N is usually zero, meaning: do not cache it, or cache in a way that a revocation propagates immediately.
+
+### Trap 5: "Our cache hit rate is 90%"
+
+**The claim.** Hit rate is high. Cache is working.
+
+**Why it's false.** The 10% that miss are the requests that hit the database. If the missing 10% is uniformly random, fine. If the missing 10% is concentrated on a small set of hot keys during peak traffic (a user with 500 followers hitting the timeline endpoint), that 10% can DoS your database while your average hit rate looks great.
+
+**The fix.** Look at hit rate per key and per time bucket, not the global average. Identify keys with high miss volume during peak traffic. Warm those keys deliberately, or apply thundering-herd protection specifically for them.
+
+### Trap 6: "We warm the cache on deploy"
+
+**The claim.** On deploy, we run a warm-up script that populates the cache. Post-deploy is fast.
+
+**Why it's false.** Deploy is not instantaneous. Traffic keeps flowing during rollout. The old instances are being drained, the new ones are starting up cold. If your rollout takes 30 seconds and you get 1000 requests per second, that's 30,000 requests hitting a cold cache (which means 30,000 DB queries). The database sees a spike that looks a lot like an incident.
+
+**The fix.** Warm-up must complete *before* traffic is routed to the new instance. Kubernetes readiness probes are one way (don't mark ready until warm). Or use a shared distributed cache that survives the deploy, so new instances inherit warm data. Or accept the burst and provision the database to handle it.
+
+### Trap 7: "Cache-aside is simple, we're fine"
+
+**The claim.** We use the cache-aside pattern (check cache, miss, fetch, fill). Nothing to it.
+
+**Why it's false.** Cache-aside has three well-known races in production:
+
+- **Read-race**: two readers miss simultaneously, both fetch from DB, both write to cache. Wasted DB work.
+- **Write-race**: a reader misses and starts fetching. A writer updates the DB and deletes the cache. The reader (with a stale value in memory) writes back after the delete. The stale value is now cached for the full TTL.
+- **Dogpile**: hot key expires, everyone misses, everyone hits the DB. Thundering herd (Section 8).
+
+**The fix.** Singleflight for read-race and dogpile. Delete-after-commit and (for critical data) versioned keys for write-race. See Sections 6 and 8.
+
+### Trap 8: "Cache is just optimization; if it's down, we're still correct"
+
+**The claim.** The cache is a performance layer. If it fails, requests still work; they're just slow.
+
+**Why it's false.** *If they still work.* When Redis is up, your database gets 10% of the load (the 10% cache miss rate). When Redis is down, your database gets 100%. If it can't handle 100%, the cache going down triggers a cascading DB outage.
+
+Also: some code paths use the cache as more than just optimization. Distributed locks live in Redis. Session tokens live in Redis. Rate limiters live in Redis. When Redis goes down, "just optimization" is wildly optimistic about what breaks.
+
+**The fix.** Load-test your DB (and the rest of the system) at 100% traffic with the cache disabled. If the answer is "the system dies," design a fallback (see the [BullMQ resilience post](/real-world-resilience-bullmq-and-contracts) and the [designing for resiliency post](/designing-for-resiliency)). At minimum: a circuit breaker on the DB, so a cache outage doesn't turn into a DB outage.
+
+## Section 10: Distributed Cache Pitfalls
+
+For teams running multi-region or multi-cluster caches, some traps are unique to that scale:
+
+**Cross-region invalidation lag.** A write in `us-east-1` invalidates the local Redis. The `eu-west-1` cache has no idea. Users in Europe see stale data for the TTL window. Solutions: publish invalidations globally (via a pub/sub or a database write log), or version keys so readers can detect staleness on their own.
+
+**Split-brain.** During a network partition, both halves of a distributed Redis cluster keep serving reads. Writes on either side create inconsistency. Redis Cluster and most sharded caches handle this with quorum rules; know yours before the incident.
+
+**TTL drift.** Different regions have different clocks (usually within milliseconds, sometimes not). A TTL set at 60 seconds might expire at 59 or 61 depending on the reader. Do not depend on cache TTL for correctness of anything time-sensitive.
+
+**Cache poisoning.** An attacker submits input designed to be cached and served to other users. Common vectors: user-controlled request paths hitting a CDN that caches too aggressively, SSRF that pollutes an internal cache, or trusting the `Host` header (see [the Cloud Run + Cloud Armor post](/cloud-run-cloud-armor-incident)) when building cache keys. Fix: never include untrusted input in a cache key without sanitization, and never cache a response that includes user-scoped data at a shared cache layer.
+
+**Cardinality explosions.** A cache key that includes a user ID or timestamp is per-user. A million users equals a million keys. Memory usage explodes. Redis eviction kicks in, evicting hot keys to make room, and hit rate collapses. Design keys with cardinality in mind.
+
+## Prompting a Cache Design, Not a Redis Snippet
+
+Ask AI "how should I cache this?" and you get a Redis snippet with `client.setex(key, 3600, value)`. Not a design.
+
+**Weak prompt (produces a snippet):**
+
+> How should I cache this data?
+
+**Structured prompt (produces a design):**
+
+> **Role:** Systems engineer designing a caching layer.
+> **Context:** The data is [type]. Read-to-write ratio: [X]. Business-tolerable staleness for a reader: [seconds]. Business-tolerable staleness for a writer's own next read: [seconds]. Expected hot-key ratio (does a small % of keys serve most requests?): [Y]. Cache tier available: [in-memory / Redis / Memcached / CDN]. Deployment: [single region / multi-region].
+> **Task:** Propose the cache design in five parts: (1) key naming convention with namespace and version, (2) cache pattern (cache-aside / read-through / write-through / etc.), (3) TTL(s) and rationale, (4) invalidation strategy, (5) thundering-herd protection. For each choice, explain what breaks if the cache tier goes down, and what breaks if a concurrent write happens during a concurrent read.
+> **Constraint:** Do not propose caching without an explicit staleness budget. Do not propose TTLs without jitter. Do not omit the cache-down failure analysis.
+
+The last constraint is what makes this prompt worth using. Most cache "designs" ignore what happens when the cache disappears. That question is where real systems live or die.
+
+## The Rule Worth Writing on the Whiteboard
+
+**Caching is a promise about consistency that you almost certainly forgot you were making.**
+
+Every cache in your system encodes a specific answer to "how stale can this data be before someone gets hurt?" If nobody on the team can quote that answer for every cache, you don't have a caching strategy; you have a shared hallucination.
+
+Write the answer down for every cache. Enforce the TTL, the invalidation, and the fallback with real code and real tests. Load-test the world without the cache; know exactly what fails when Redis dies. Assume every "we're safe" claim in Section 9 was made by a smart engineer who is now debugging why it wasn't true.
+
+Fast is easy. Fast *and correct* under partial failure is where senior engineering shows up. The whiteboard is where that starts.
