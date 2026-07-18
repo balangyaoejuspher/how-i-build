@@ -1,0 +1,258 @@
+---
+title: "How I Build: Environments and Deployment Strategies, Beginner to Advanced, and the Eight Ways We Only Think We Tested It"
+authors: [balangyaoejuspher]
+tags: [architecture, standards, devops]
+date: 2026-07-18
+slug: /environments-and-deployment-strategies
+---
+
+Every team that has ever taken production down with a "safe" deploy started the day with a sentence that turned out to be false. "It passed CI." "We tested it in staging." "The migration is backward-compatible." "We can roll back if anything goes wrong." "It's behind a feature flag, we can turn it off."
+
+Each of these is true in a specific, narrow way. Each of them is dangerous when treated as generally true. This post is the deploy-and-environment layer laid out from beginner to advanced, with the same "we're safe" trap framing that keeps showing up in real postmortems.
+
+If you push code to production, some of this applies to you. All of it applies if you're the one who has to write the postmortem when the deploy goes sideways.
+
+{/* truncate */}
+
+## Section 1: The Vocabulary Before Anything Else
+
+Words that get used loosely in every deploy argument.
+
+**Environment.** An isolated instance of the system, with its own data, its own configuration, and its own reach. Dev, staging, preview, prod are all environments. So is your laptop. So is CI.
+
+**Deployment.** The act of moving new code into an environment. Just moving the artifact; nothing about whether users see it yet.
+
+**Release.** The act of exposing the new code to users. Traditionally coupled to deployment; increasingly decoupled via feature flags.
+
+**Rollout.** The process of shifting traffic from the old version to the new version. Can be all-at-once, gradual, or targeted.
+
+**Rollback.** Going back to the previous version. Roll back the code, roll back the config, and sometimes (dangerously) roll back the data.
+
+**Blue/green.** Two production-identical environments (blue = live, green = staged). Deploy to green, cut traffic over, blue is now the fallback.
+
+**Canary.** Roll out to a small percentage of production traffic first, measure, then expand if healthy.
+
+**Feature flag.** A runtime switch that turns a code path on or off without deploying. Can be per-user, per-tenant, per-percentage, per-anything.
+
+**Kill switch.** A specific feature flag whose only job is "instantly disable this thing if it starts causing pain." Every risky feature should ship with one.
+
+**Dark launch.** Deploy the code but don't route users to it. Run it against production data or shadow traffic to test at scale before any user sees it.
+
+If the team doesn't share these definitions, half the deploy discussions never actually agree on what happened.
+
+## Section 2: The Environment Ladder, and Where Every Team Skips a Rung
+
+Most orgs have some version of dev → staging → prod. Some also have preview, QA, or a separate integration environment. All of them exist to catch problems before real users do.
+
+| Environment       | Purpose                                                | What it should have                                       | Where teams cheat                       |
+| ----------------- | ------------------------------------------------------ | --------------------------------------------------------- | --------------------------------------- |
+| **Local / dev**   | Fast iteration, testing your own changes.               | The full app running against realistic (not real) data.    | "It works on my machine."               |
+| **Preview / PR** | Per-PR isolated environment for reviewers and PMs to click through. | Ephemeral, spun up from the PR branch, seeded with realistic data. | Skipped entirely; reviewers click nothing. |
+| **CI**            | Automated verification before merge.                    | Lint, type-check, unit tests, integration tests, coverage floor. | "Tests are flaky, let's just re-run."   |
+| **Staging**       | Final integration check before prod. Test with production-shape data and production-similar traffic. | Same infra as prod, real third-party sandboxes, migration lifecycle mirrored. | "Similar to production" instead of same. |
+| **Production**    | Real users, real money, real consequences.             | Everything you have.                                       | This is the one you can't cheat.        |
+
+The single biggest reason "we tested it in staging" ends up in a postmortem is that staging is not actually production-shaped. Real staging has:
+
+- **Production data shape.** Not synthetic data. Not a snapshot from six months ago. Data that reflects the variety, cardinality, and edge cases of real users, refreshed on a real schedule. Ideally scrubbed of PII but structurally identical.
+- **Production traffic profile.** If prod handles 500 requests per second and staging handles 5, half your load-related bugs never surface. Shadow traffic mirroring is one way; synthetic load generation is another.
+- **Production third-party integrations.** If prod uses Stripe's live mode and staging uses a Stripe mock, integration bugs live in the gap. Use vendor-provided sandboxes (Stripe test mode, Twilio test credentials, etc.) or contract-tested mocks that mirror the real API surface.
+- **Production migration lifecycle.** Migrations run on staging exactly as they will run on prod: same tool, same locking behavior, same rollout order, same DBA involvement. A staging migration that "just works" tells you nothing if prod migrations are gated differently.
+
+If your staging is missing any of these, "we tested it in staging" is not a claim about production; it's a claim about staging. Recognize the gap explicitly.
+
+## Section 3: Deployment Strategies
+
+Once code is ready to ship, you have to move it into prod. The pattern you pick decides how fast you can roll back, how much blast radius a bad deploy has, and how much infra it costs.
+
+| Strategy          | How it works                                              | Rollback speed          | Blast radius         | Infra cost              | Best fit                                    |
+| ----------------- | --------------------------------------------------------- | ----------------------- | -------------------- | ----------------------- | ------------------------------------------- |
+| **Recreate**      | Stop old, start new.                                       | Minutes (redeploy old).  | 100% during downtime. | Low.                    | Dev/staging; small internal tools.           |
+| **Rolling**       | Replace old instances with new, N at a time.              | Minutes (roll forward).  | Small during rollout. | Low.                    | Stateless services, no compat break.         |
+| **Blue/green**    | Full second environment; flip traffic in one atomic step. | Seconds (flip back).     | 100% on the flip.     | High (double capacity). | Fast-rollback critical; simple traffic model. |
+| **Canary**        | Route small % of traffic to new; expand on health signals. | Minutes (drain canary).  | Contained to the canary %. | Medium.               | High-stakes changes with good observability. |
+| **Shadow / mirror** | Real traffic duplicated to new version; responses discarded. | N/A (not user-facing).  | Zero for users.       | Medium.                 | Verify behavior at real scale before any user sees it. |
+| **A/B / experiment** | Deterministic user split, both versions live.           | Minutes (kill experiment). | Contained to test group. | Medium.               | Product experiments, not deploy safety.      |
+
+The default for most services: **rolling deploys with a canary stage for anything higher-risk**. Blue/green sounds great in a whiteboard talk; in practice, its "instant rollback" claim is only true when the database migration is instantly reversible, which most aren't. See Trap 3.
+
+## Section 4: Feature Flags Decouple Deploy From Release
+
+The pattern most teams underuse. A feature flag is a runtime switch. Code ships to production behind a flag set to OFF; nobody notices. When you're ready, you flip the flag to ON gradually (1% of users, then 10%, then 100%). If something breaks, flip it back OFF instantly without a redeploy.
+
+This changes the risk model of every deploy:
+
+- **Deploy is boring.** Code ships often, in small increments. Nothing is user-visible.
+- **Release is a business decision.** Marketing, product, or on-call decides when the flag flips.
+- **Rollback is instant.** Flip the flag; done. No redeploy pipeline, no rollback of the artifact.
+
+Four kinds of flag, each with a different lifecycle:
+
+- **Release flags.** New feature, ships OFF, gets flipped ON when ready. Lifetime: weeks to months. Delete after 100% rollout is stable.
+- **Experiment flags.** Split users into A and B to measure a hypothesis. Lifetime: the length of the experiment. Delete after decision.
+- **Ops flags / kill switches.** Circuit breakers for expensive features under load. Permanent. Never delete.
+- **Permission / entitlement flags.** Per-user or per-tenant access to features. Permanent, but usually should live in the auth/authz layer, not the flag system.
+
+The rule that keeps a flag system sane: **every flag has an owner and a target delete date at creation.** Otherwise you end up with 400 stale flags, half of which nobody knows what they do, and the flag system becomes debt instead of leverage.
+
+Real tools: [LaunchDarkly](https://launchdarkly.com/), [Statsig](https://statsig.com/), [Flagsmith](https://flagsmith.com/), [Unleash](https://www.getunleash.io/), or a homegrown table in your database plus a memoized reader. Homegrown is fine to start; migrate to a vendor when the team's flag hygiene needs help.
+
+## Section 5: Rollback, the Word That Means Different Things to Different People
+
+Every deploy plan should answer "how do we roll back if this goes wrong" before it ships. Not everyone means the same thing by "roll back."
+
+**Code rollback.** Redeploy the previous artifact. Trivial in most CI/CD systems. Fast, usually reliable.
+
+**Config rollback.** Revert the config change (env vars, feature flag values, WAF rules, etc.). Fast if config is version-controlled with the same tooling; painful if it lives in a UI somewhere.
+
+**Data rollback.** Undo the writes made under the bad version. Almost always hard. Sometimes impossible.
+
+**Feature-flag rollback.** Flip the flag off. Fast, but "off" doesn't undo state that was written while it was on.
+
+The pattern that separates senior teams from the rest:
+
+- **Every deploy has a written rollback plan** before it ships. Not "we can revert the commit"; the actual specific plan including database, config, and downstream effects.
+- **Migrations are designed to be rolled back for a specific window**, or explicitly declared non-rollbackable (in which case the deploy plan says "no rollback; forward-fix only").
+- **Automated rollback triggers** watch key SLOs during the rollout. Error rate above X for Y minutes triggers automatic rollback, or at least a page.
+- **Forward-fix vs revert is a written decision**, not a hot-take at 2 a.m. Some incidents are easier to forward-fix (a config typo). Some are easier to revert (a subtle logic bug). Know which is which for common failure modes.
+
+Rollback is a discipline, not a button. Teams that treat it as a button eventually push the button and discover it wasn't wired to what they thought it was.
+
+## Section 6: Migration Safety, the Expand/Contract Pattern
+
+Database migrations are where most "backward-compatible" claims turn out to be false. The safe pattern is expand/contract, run over multiple deploys:
+
+**Expand phase (deploy 1).**
+1. Add the new column / table / index. Make it nullable or with a default.
+2. Ship code that writes to both old and new (dual-write).
+3. Ship code that reads from the new but falls back to old.
+4. Backfill old data into the new shape over time.
+
+**Cutover phase (deploy 2).**
+5. Ship code that reads only from new. Verify.
+
+**Contract phase (deploy 3, after a full stability window).**
+6. Ship code that stops writing the old.
+7. Drop the old column / table / index.
+
+Every step is independently deployable and independently rollbackable. If step 2 breaks, roll back to step 1; the new schema is unused but harmless. If step 5 misbehaves, roll back to reading old.
+
+The anti-pattern: rename a column in one deploy. The ORM cache expects the old name. New code expects the new name. The window between "migration ran" and "all instances have new code" is a race. Users see 500s for the duration. Expand/contract avoids this entirely.
+
+For teams that use an ORM, the ORM adds a layer of risk: it caches the schema at process start. A migration that "just adds a column" invalidates that cache; queries that used `SELECT *` now include the new column, which older code doesn't know how to handle. The fix is to never `SELECT *` at the application layer, and to plan migrations expecting the ORM cache to be a moment behind.
+
+## Section 7: The Eight "We're Safe" Traps
+
+The genuinely differentiated part of the post. Every claim below is common; every one is subtly wrong.
+
+### Trap 1: "We tested it in staging"
+
+**The claim.** The change passed all our tests in staging. Prod is next.
+
+**Why it's false.** Staging usually differs from prod in ways that hide bugs. Smaller data volume (query planner picks different plans at scale). No production integrations (Stripe live vs test-mode). No real user traffic patterns. Different infra (Cloud Run in staging, GKE in prod, or same platform with different config). Different runtime settings (feature flags in a different state). Every one of those differences is a place where staging said "safe" and prod said "not so fast."
+
+**The fix.** Enumerate the specific ways staging differs from prod, and for each one, describe how you compensate. Shadow traffic is one compensation. Load testing is another. Explicit "we cannot test this here" notes go on the deploy plan so nobody imagines they did.
+
+### Trap 2: "CI passed"
+
+**The claim.** The build is green. Ship it.
+
+**Why it's false.** CI runs the tests you wrote against the code you have, using the assumptions you made. It does not run against real users, real data, or scenarios you didn't imagine. Green CI is necessary but not sufficient. Every incident's postmortem has a "yes, CI was green" line.
+
+**The fix.** Treat CI as a filter, not a certification. Add integration tests that exercise real dependencies. Add contract tests for external APIs (see the [API design post](/api-design-and-versioning)). Add load tests for anything performance-sensitive. And accept that some categories of bug will never be caught by any automated test; those get caught by canaries and observability (see the [observability post](/observability-from-day-one)).
+
+### Trap 3: "We use blue/green, rollback is instant"
+
+**The claim.** Traffic flip is atomic. Flipping back is instant. We're safe.
+
+**Why it's false.** Traffic rollback is atomic only if the state is atomic-rollbackable. Most state isn't. If green migrated the database schema, flipping traffic back to blue means blue is now reading a schema it doesn't understand. If green wrote data in a format only green understands, blue crashes on read.
+
+Blue/green is "instant rollback" only for the specific case of a pure code change with no persisted state change. Every other case, blue/green is roughly as slow as a rolling deploy for rollback, sometimes slower.
+
+**The fix.** Design migrations with expand/contract (Section 6) so both blue and green can operate against the schema during any window. If a change is fundamentally not blue/green-safe (destructive migration, incompatible protocol change), say so in the deploy plan and use a different strategy.
+
+### Trap 4: "We deploy with zero downtime"
+
+**The claim.** Rolling deploy, graceful shutdown, zero downtime.
+
+**Why it's false.** Zero downtime for stateless short-lived requests. Users with:
+
+- **Long-lived connections** (WebSockets, Server-Sent Events, long-polling): dropped when the old instance drains.
+- **Sticky sessions** anchored to a specific instance: broken when that instance goes away.
+- **In-flight background jobs** started on the old instance: either killed or forced to finish before drain completes, either way affecting latency SLOs.
+- **File uploads or long-running requests** started on the old instance: get aborted if drain window is shorter than the request.
+
+**The fix.** Named "graceful shutdown windows" per service that respect the actual longest request. Drain hooks that finish in-flight work before dying. For WebSockets specifically, plan for reconnection on the client and know that reconnect storms are a real load event. If your service has jobs that take minutes, your deploy pattern needs to account for that or you're always mid-drain-killing something.
+
+### Trap 5: "The migration is backward-compatible"
+
+**The claim.** The new schema still supports the old queries. Backward-compatible.
+
+**Why it's false.** Backward-compatible in three senses that don't all overlap:
+
+- **SQL-level.** The old query still parses and returns rows. Yes, usually.
+- **Semantic.** The old query returns *the same rows with the same meaning*. Not always. If you added a nullable column that changes what "active" means, the old query still runs but returns different semantics.
+- **ORM-level.** The old code's schema cache still matches. Sometimes no; the ORM refetches on next query and the old code path breaks with an unexpected field.
+- **Migration lock behavior.** The migration itself takes a table lock. On a large table, that lock blocks writes for minutes. "The migration ran" is true; "the migration ran without disrupting traffic" is a separate question.
+
+**The fix.** Test the migration on a staging DB that has production data volume. Watch for lock times explicitly (many DBs have `pg_stat_activity` equivalents). Use online migration tools (`pt-online-schema-change` for MySQL, `pg_repack` or careful `ALTER` for Postgres) when a lock would be too long. Design ORM code that tolerates the schema being one step ahead of it (or one step behind).
+
+### Trap 6: "We can roll back if anything goes wrong"
+
+**The claim.** The rollback button exists. We can push it.
+
+**Why it's false.** The rollback button rolls back the code. It rolls back the config only if the config is version-controlled with the same pipeline. It does not roll back data written during the bad version. If the bad version wrote invalid records to the database, rolling back the code leaves the records; the old code sees them and crashes, or (worse) silently misprocesses them.
+
+**The fix.** Every deploy plan lists explicitly: (a) what code rolls back, (b) what config rolls back, (c) what data changes need cleanup after rollback, (d) how long until forward-fix is preferable. If (c) is "we don't know," the deploy is not ready.
+
+### Trap 7: "Canary caught nothing bad"
+
+**The claim.** We ran a canary at 1% traffic for 10 minutes. No errors. Ship to 100%.
+
+**Why it's false.** Canaries catch what they measure. If the canary duration is shorter than the bug's incubation window (memory leaks, connection-pool exhaustion, cache warm-up effects), you miss the bug. If the canary volume is smaller than the trigger threshold (rate limits, cardinality-triggered issues, high-percentile latency effects), you miss the bug. If the canary users are not representative (only US-East traffic, only free-tier users, only healthy sessions), you miss the bug that affects the rest.
+
+Canary is a filter, not a certification.
+
+**The fix.** Canary duration long enough to see slow-onset issues (30 to 60 minutes minimum for most services). Traffic percentage large enough to trigger the effects you care about (5 to 10% is a better default than 1%). Explicit health signals that must clear before expanding (not "eyeball the dashboard"). Automatic revert if any signal breaks. And "canary passed" written as "canary passed on these specific signals" not "everything looked fine."
+
+### Trap 8: "It's behind a feature flag, we can turn it off"
+
+**The claim.** If this new feature causes issues, we flip the flag off. Safe.
+
+**Why it's false.** Flipping the flag off stops the code from running. It does not undo:
+
+- Data written to the database while the flag was on. That data lives on, and code that reads it (with or without the flag) has to handle it.
+- Cached responses that included the new feature's output. Users still see the cached version until it expires or is invalidated.
+- Downstream systems (webhooks, events, third-party integrations) that already received messages from the new code path. Those messages exist in someone else's system now.
+- Cost, if the feature triggered expensive operations. The bill is already accruing.
+
+Feature flags are excellent for *not shipping code path A anymore*. They are much less excellent as "undo the last hour of the world."
+
+**The fix.** For every risky feature-flagged change, document explicitly what state the code path creates and what happens to that state when the flag flips off. Sometimes the state is harmless; sometimes it needs a cleanup job triggered along with the flag flip. Know which before you rely on the flag as a safety net.
+
+## Prompting a Deploy Review, Not a Rubber Stamp
+
+Ask AI "review this deploy plan" and you get a summary that agrees with everything. Not useful.
+
+**Weak prompt (produces agreement):**
+
+> Review my deployment plan.
+
+**Structured prompt (produces the questions worth asking):**
+
+> **Role:** Senior SRE reviewing a deploy plan.
+> **Context:** The deploy contains: [summary of code changes], [summary of migration], [summary of config changes]. Target environment: [prod / staging]. Current traffic: [volume]. Observability signals available: [SLO / alert list].
+> **Task:** For each of the eight "we're safe" traps (testing in staging, CI passing, blue/green rollback speed, zero-downtime claims, backward-compatible migration, rollback completeness, canary sufficiency, feature-flag safety net), evaluate whether the plan actually holds. For each trap that applies, describe the specific failure mode and the mitigation the plan should include but does not.
+> **Constraint:** Do not summarize the plan. Do not approve it. Only surface risks the plan under-mitigates. If the plan looks safe against a specific trap, say so and explain why briefly.
+
+That prompt turns "review" from validation into adversarial reading. What comes back is a list of gaps you can either fix or explicitly accept, not a summary that lets you skip the thinking.
+
+## The Rule Worth Writing on the Whiteboard
+
+**Every "we tested it" claim is a claim about a specific environment under specific conditions, not a general statement of safety.**
+
+Every trap in Section 7 exists because someone made a general claim from a specific test. The fix is not more testing (though that helps). The fix is the *habit* of naming the specific claim: "we tested it in staging, which has 5% of prod's traffic and no live payment integration; the specific things that claim covers are X and Y; the specific things it does not cover are Z."
+
+That habit takes an extra 30 seconds per deploy. It saves the incident where you shipped confidently and were wrong. Senior engineers do this without thinking about it. Junior engineers get taught it (or learn it the hard way after their first bad deploy).
+
+Ship carefully. The whiteboard is where the confidence you had before pushing meets the reality you deal with after.
