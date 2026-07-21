@@ -1,0 +1,278 @@
+---
+title: "How I Build: How I Read a Codebase I Didn't Write, the Method That Beats Skimming and Beats Asking AI to Summarize It"
+authors: [balangyaoejuspher]
+tags: [craft, standards, ai]
+date: 2026-07-21
+slug: /reading-unfamiliar-code
+---
+
+The most-used skill in software engineering is the one nobody teaches. Every new job starts with a repo you've never seen. Every code review of a new area starts with code you didn't write. Every open-source contribution starts with a codebase that assumes you already know how it works. Every incident in a service you don't own starts the same way. You open the file. And then what?
+
+The [Hiring post](/hiring-engineers-what-i-look-for) already named reading unfamiliar code as the single most predictive hire signal I know. It stays predictive at every level, because senior work involves *more* inherited code, not less. A staff engineer who can't get up to speed on a new codebase in a week is a staff engineer whose value is capped by what they wrote themselves.
+
+This post is the method I actually use. It's for students hitting their first internship, mid-level engineers changing jobs, seniors joining new teams, and open-source contributors opening a repo for the first time. Whichever you are, the framework is the same. The wrong-way traps are also the same, and one of them is new: "I asked AI to summarize it."
+
+{/* truncate */}
+
+## Section 1: Why This Skill Compounds
+
+The junior-to-senior progression is not "learn more languages" or "learn more frameworks." It's *learning to be productive faster in situations you did not create*. Every promotion adds another codebase you didn't write to your daily surface area.
+
+- Junior at a first job: one codebase you didn't write.
+- Mid-level at a growing company: three or four services touched, all inherited.
+- Senior across a domain: ten to twenty services, plus every RFC you review, plus every architecture question that lands in your DMs.
+- Staff / principal: the whole platform, most of which shipped before you arrived.
+
+If your reading speed doesn't scale, your impact doesn't scale. Simple as that.
+
+## Section 2: The Wrong Ways to Start
+
+Before the method, the anti-methods. These waste hours and give false confidence.
+
+**Opening every file in order.** You end up with tab overload, no mental model, and a vague sense of "there's a lot going on." You've read a lot of characters; you've understood almost nothing.
+
+**Starting at `main` and following imports.** Fine for a 200-line CLI. Useless for anything real. You end up 15 levels deep in a dependency injection container and no closer to knowing what the app *does*.
+
+**Reading the README as ground truth.** The README was accurate on the day it was written. If it's more than three months old, it's a suggestion. If it's more than a year old, it's a lie the current team politely won't correct.
+
+**Trying to read the whole codebase before touching anything.** You'll be there for weeks. The codebase is too big and, more importantly, you don't know yet what matters. Reading everything at 20% comprehension gives you nothing; reading 5% at 90% comprehension gives you a foothold.
+
+**Asking AI to summarize the codebase and stopping there.** The seductive new anti-method. AI summaries flatten every codebase into a competent-sounding paragraph that omits the exact non-obvious invariants, historical decisions, and load-bearing quirks that matter. Summary as a *starting* point is fine. Summary as a *replacement* for reading is how you ship the incident described in the [Vibe Coding Autopsy](/vibe-coding-autopsy).
+
+**Skipping the deployment and infrastructure config.** You read the application code but not the Dockerfile, the CI file, or the Terraform. Result: you have no idea what "reality" actually looks like. The application code is one variable in a system whose other variables you never opened.
+
+## Section 3: The Method
+
+Eight steps, in order. You don't have to follow them literally, but you will find that skipping a step comes back to bite you later.
+
+### Step 1: Locate the entry point
+
+What is this repo *actually*? A service? A CLI? A library? A monorepo of many things? Where does execution start?
+
+Look for:
+
+- `main.*`, `index.*`, `app.*`, `server.*`, `serve.*`
+- HTTP handler registration (routes, controllers)
+- CLI command definitions
+- Job entry points (queue consumers, cron)
+- Test entry points (they run something, which is instructive)
+
+Write down what you found in one sentence: "This is a Node.js HTTP service that exposes REST endpoints under `/api/v1`, plus a background worker that consumes from a BullMQ queue."
+
+That sentence is your compass. Every other file you read gets placed relative to it.
+
+### Step 2: Understand the deployment shape
+
+How does this thing actually run in production? A container? A serverless function? A daemon behind Nginx? A Kubernetes deployment with three replicas?
+
+Read:
+
+- `Dockerfile` and any `docker-compose` files
+- `.github/workflows/` or equivalent CI config
+- Terraform / Pulumi / CDK / Helm charts if present
+- Environment variable schema (`.env.example`, `docker-compose.yml env:`, `k8s ConfigMap`)
+- Health check endpoints and readiness probes
+
+Now you know: "This runs as a container behind Cloud Run, three min instances, autoscaling to twenty, with `REDIS_URL` and `DATABASE_URL` from Secret Manager, deployed via a GitHub Actions workflow on push to main."
+
+You've now placed the application code inside its actual runtime context. Half the mysteries in the codebase resolve as soon as you know this.
+
+### Step 3: Find the data model
+
+Data outlives code. If you understand the data model, you're halfway to understanding the code (as covered in the [database schema post](/database-schema-and-naming)).
+
+Look for:
+
+- Migration files (`prisma/migrations`, `db/migrate`, `sql/`, `flyway/`)
+- ORM model definitions (`schema.prisma`, `models/`, `entities/`)
+- Shared type definitions (`types/`, `interfaces/`, `packages/shared`)
+- Event schemas (`schemas/`, `avro/`, `proto/`)
+- API response types (usually generated from OpenAPI or hand-rolled)
+
+Skim through and answer: what are the primary entities? How do they relate? Which are the source of truth vs derived? Are there any obvious multi-tenant boundaries?
+
+Draw the ERD if you have to. Ten minutes with a whiteboard here saves you hours of confusion later.
+
+### Step 4: Trace one critical path end-to-end
+
+Pick one user-facing action that matters. "User places an order." "User logs in." "User uploads a file."
+
+Now trace it, from the moment the request hits the entry point to the moment the response goes back. Take notes at every layer:
+
+- Which route matched?
+- Which handler / controller ran?
+- What validation happened?
+- What business logic was invoked?
+- What database queries fired?
+- What external calls (Stripe, SendGrid, Redis, etc.) happened?
+- What was the response shape?
+
+Draw the sequence diagram. Even if it's a sketch on paper. The act of drawing forces you to be honest about which parts you understood and which parts you skipped.
+
+**This is the single highest-value step.** If you only do one thing, do this one. Everything else in the codebase snaps into context once you've traced one full flow.
+
+### Step 5: Find the seams
+
+Every codebase has seams: places where the style, quality, or approach changes because that section was written by a different team, at a different time, or under different constraints. Seams are where bugs live and where the interesting history lurks.
+
+Signals to look for:
+
+- Two different testing styles in adjacent folders
+- Two different naming conventions in adjacent files
+- A folder that uses one abstraction (repository pattern, service layer) and a sibling folder that doesn't
+- A section that's suspiciously well-commented (someone knew this was fragile)
+- A section that's suspiciously *un*-commented (someone rushed)
+- Anything named `*_v2`, `*_new`, `legacy_*`, or `old_*`
+- Directories or files with the same content in slightly different shapes (see [Duplicated Functions and Technical Debt](/duplication-and-technical-debt))
+
+The seams are where the codebase records its history. Learn to read them.
+
+### Step 6: Read the "boring" configuration
+
+The files most developers skip because they don't feel like "real code":
+
+- `package.json` / `pyproject.toml` / `go.mod`. Dependency list, scripts, engine constraints. This is where you learn what tools the team actually uses.
+- `tsconfig.json` / linter configs / formatter configs. Reveals the team's discipline. Strict mode on? Explicit error rules? Custom eslint plugins for internal patterns?
+- `.env.example` / `example.env`. Every env var is a coupling point to something outside the code. Read them and you'll know every third-party service and every feature flag.
+- `CODEOWNERS`. Tells you who to ask.
+- `SYSTEM_DNA.md` or equivalent (if the team follows [the Agentic Workflow post](/agentic-development-workflow)'s recommendation). The domain glossary and invariants. Read this first if it exists.
+
+None of this is exciting. All of it is where the team's tacit knowledge lives.
+
+### Step 7: Git-blame the confusing parts
+
+When you hit a section you don't understand, resist the urge to skip it. Run `git blame` on the specific line. Read the commit message. Read the PR the commit belongs to.
+
+Nine times out of ten, the commit message tells you:
+
+- What the change was for
+- Which incident or ticket drove it
+- Who to ask if you need more context
+
+The tenth time, the commit message is "fix bug" and the PR title is "cleanup." That's a signal too: this code was written in haste and probably deserves more suspicion.
+
+Git blame is not blame. It's archaeology. Every codebase is a layered record of decisions made under specific pressures. Read the record.
+
+### Step 8: Ask questions only humans can answer
+
+At some point, you will have a question that no amount of reading answers: "Why did we choose SQS over Kafka?" "What was the incident that led to this validation rule?" "Why is this service split from the main app?"
+
+These are the questions the codebase cannot answer. They belong to someone's memory. Find that person and ask them.
+
+The best time to ask is when you've done Steps 1 through 7 already. Then you can walk in with: "I traced the checkout flow, I see the SQS integration in `services/payments/queue.ts`, I'm confused about *why* it was chosen over Kafka for this workload. Was there an incident?" That gets a two-minute answer that would have taken you hours to reverse-engineer.
+
+The wrong time to ask is on day one before you've done any of the reading. That question ("hey, why do we use SQS?") lands on the senior as "help me instead of me helping myself." The right question, with context, lands as "let me trade five minutes of your time for something that would take me five hours."
+
+## Section 4: Where AI Helps and Where It Doesn't
+
+AI is a real leverage point in code reading if you use it as an amplifier, not a shortcut. Where it earns its keep:
+
+- **Explaining an idiom.** "What does this Rust generic bound mean?" is a great AI question.
+- **Building a call graph.** "Starting from this function, list every function it calls and what those functions do at a one-line level."
+- **Translating a pattern.** "This looks like the ports-and-adapters pattern; can you confirm and label the port, the adapter, and the entry point?"
+- **Naming a smell.** "This looks like it might be a factory that's really a service locator; is that fair?"
+- **First-pass summaries of a single file** (not a whole codebase).
+
+Where it actively hurts:
+
+- **"Summarize the codebase."** Flattens everything. You get a paragraph that sounds right and misses everything specific. Do not stop here.
+- **"What does this codebase do?"** Same problem. AI has read the file names and inferred a story. The story may be wrong.
+- **"Fix this bug."** AI cannot fix a bug in a codebase whose invariants it doesn't hold. You'll get a plausible patch that breaks something else you didn't tell it about.
+- **"Why was this designed this way?"** AI will invent a reason. It doesn't know. Only humans do.
+
+The rule from [The AI Co-Pilot Discipline](/ai-copilot-discipline) applies verbatim: you may not commit code you cannot explain in a code review. In code reading, the equivalent is: **you may not act on an AI summary you cannot verify from the actual code.**
+
+## Section 5: The Eight "I Understood It" Traps
+
+The false-safety patterns specific to code reading. Every one of these is common; every one leads to a bug the reader could have caught.
+
+### Trap 1: "I got the gist"
+
+**The claim.** I skimmed it; I understand the shape.
+
+**Why it's false.** The gist is your compass. It's not your map. Bugs live in the parts that surprised you when you looked closer, not the parts you got at a glance. Every "I got the gist" incident I've seen ends with the reader missing a specific detail that turned out to be load-bearing.
+
+**The fix.** For anything you're going to modify, read line-by-line. Gist is fine for orientation. Gist is not enough for change.
+
+### Trap 2: "AI summarized it for me"
+
+**The claim.** I asked the model to explain the codebase; I got a great answer.
+
+**Why it's false.** AI summaries are competent-sounding, factually average. They fit the training distribution. Your specific codebase deviates from the average in exactly the places that matter, and the summary flattens those out.
+
+**The fix.** Use AI to accelerate specific reading tasks (Step-scoped questions), not to replace the reading.
+
+### Trap 3: "The tests tell me what it does"
+
+**The claim.** The tests are the executable spec.
+
+**Why it's false.** Tests describe intended behavior for the cases the author thought of. Real code has emergent behavior at the seams between modules and under real load. Tests are half the truth; the other half is what the code actually does when a case the author didn't think of arrives.
+
+**The fix.** Read the tests, then trace one path independently. If the trace matches the tests, good. If it doesn't, you've found either a bug or a test gap. Both are valuable.
+
+### Trap 4: "It uses [Framework], so I know how it works"
+
+**The claim.** This is a NestJS app; I've used NestJS; I know NestJS.
+
+**Why it's false.** Every codebase uses its framework the way *that team* uses it. Which decorators do they lean on? Which lifecycle hooks? Which conventions are enforced vs suggested? Convention deviation is where the interesting stuff lives. A generic NestJS understanding tells you almost nothing about *this* team's NestJS choices.
+
+**The fix.** Read the app's specific framework usage. Look for helpers, wrappers, base classes, and middleware that the team wrote. Those are where their real conventions live.
+
+### Trap 5: "I read the README"
+
+**The claim.** The README explains it.
+
+**Why it's false.** READMEs decay. The team's discipline around updating them is almost always weaker than their discipline around shipping code. Anything older than the last major change is at best a partial map.
+
+**The fix.** Treat the README as one input. Cross-check against the code. When they disagree, the code wins.
+
+### Trap 6: "The types tell me what it does"
+
+**The claim.** It's TypeScript with strict mode. The types are the spec.
+
+**Why it's false.** Types describe shape, not intent. `User | null` is a shape. It doesn't tell you *when* null happens, whether null is expected or an error, or what the caller should do about it. The intent lives in the code around the type.
+
+**The fix.** Types are the frame. The code is the picture. Read both.
+
+### Trap 7: "I traced one flow and it makes sense"
+
+**The claim.** I followed the login flow. I understand the app.
+
+**Why it's false.** One flow is not all flows. The checkout flow might use different patterns. The admin flow might use different auth. The background worker might operate on different assumptions than the HTTP layer. Understanding one flow gets you started; extrapolating from it to "the whole app" gets you burned.
+
+**The fix.** Trace at least two flows before making architectural claims. If the two flows work very differently, that's information; if they work similarly, you've earned a bit of extrapolation.
+
+### Trap 8: "I ran it locally and it works"
+
+**The claim.** I got it running. Therefore I understand it.
+
+**Why it's false.** Running locally proves the happy path compiles and boots. It doesn't prove you understand the code, the failure modes, the concurrency behavior, the interactions with external services (usually mocked locally), or the production-only edge cases.
+
+**The fix.** Running locally is a milestone, not a graduation. Trace the running flow; don't just admire that it started.
+
+## Section 6: The Onboarding Prompt
+
+Ask AI to "explain this codebase" and you get a summary that looks great and misses everything specific. Constrain it.
+
+**Weak prompt (produces a flattened summary):**
+
+> Explain this codebase to me.
+
+**Structured prompt (produces a scoped, honest trace):**
+
+> **Role:** Senior engineer helping me onboard to a codebase I did not write.
+> **Context:** I've pasted [file(s)] from a codebase built with [stack]. My goal is to make a change to [feature/area] within the next week. I have already located the entry point and understand the deployment shape.
+> **Task:** For the pasted file(s), (1) name every non-obvious convention or pattern in use, (2) list the questions I should ask a human on the team before making my change, (3) identify any code that appears to rely on an invariant not visible in this file alone.
+> **Constraint:** Do not summarize the file. Do not describe what it "generally does." Only surface conventions, gaps, and questions. If a section is not clear from what I've pasted, say "insufficient context" explicitly.
+
+That prompt refuses to let the model fill gaps with plausible-sounding invention. What comes back is a starting-point for your own reading, not a substitute for it.
+
+## The Rule Worth Writing on the Whiteboard
+
+**You cannot inherit understanding. You can only build it.**
+
+Every codebase you didn't write is a system you have to reconstruct in your own head. The method above is how I do it. Adapt it, add your own steps, drop the ones that don't fit your context. Just don't skip the whole exercise, because the alternative is "trust the summary" and the summary is always wrong in a way that shows up during your first bug fix.
+
+The engineers I trust most are the ones who can walk into any repo and be productive in a week. That is not a personality trait. It is a habit of asking the same eight questions, in the same order, with the same discipline, on every codebase they meet. The tools change; the questions don't.
+
+Learn the questions. Use them every time. In year one and in year twenty.

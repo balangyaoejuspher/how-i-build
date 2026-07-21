@@ -11,14 +11,15 @@ Live at **https://balangyaoejuspher.github.io/how-i-build/**
 
 ## What this is
 
-The blog is organized around a six-phase framework, published in reading order:
+The blog is organized around a seven-phase framework, published in reading order:
 
 1. **Foundation.** Users, MVP, critical path, workload profile, first-order architecture.
-2. **Tech Stack.** Package selection, version pinning, database schema, primary-key strategy.
-3. **Resiliency.** Failure modes, real-world incidents (BullMQ, WAF outages, contract drift).
-4. **Standards.** Clean architecture, CI guardrails, duplication and technical debt.
+2. **Tech Stack.** Package selection, version pinning, database schema, primary-key strategy, auth and identity, API design.
+3. **Resiliency.** Failure modes, real-world incidents (BullMQ, WAF outages, contract drift), observability, caching.
+4. **Standards.** Clean architecture, CI guardrails, duplication and technical debt, deployment strategies.
 5. **AI Discipline.** Prompt patterns, the blind-paste antipattern, agentic workflow, career traps.
 6. **Working Practices.** Code review, hiring, mentorship.
+7. **Craft and Career.** Reading unfamiliar code, debugging, growth as an engineer.
 
 Every post traces back to a written framework, every recommendation names its trade-offs, and every AI-related post shows how to use assistants without letting them ship your next incident.
 

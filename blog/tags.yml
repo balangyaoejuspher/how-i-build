@@ -42,3 +42,8 @@ ai:
   label: AI
   permalink: /ai
   description: AI-assisted development, prompt patterns, and agent discipline
+
+craft:
+  label: Craft
+  permalink: /craft
+  description: Individual craft and career skills every engineer needs
