@@ -18,7 +18,7 @@ If you cannot answer all three in a paragraph each, you are not ready to design.
 
 {/* truncate */}
 
-## Section 1: Define the User in One Paragraph
+## Define the User in One Paragraph
 
 "Everyone" is not a user. Neither is "small businesses," "developers," or "people who buy things online." Those are demographics. Users are people with jobs to do.
 
@@ -42,7 +42,7 @@ The strong version is a design constraint. It tells you the feature set (send, t
 
 If you cannot write the strong version, you are guessing. Guesses become features. Features become code. Code becomes the thing you have to maintain forever.
 
-## Section 2: Identify the Critical Path
+## Identify the Critical Path
 
 Every product has a single flow that is the reason it exists. Every other flow supports that one, or should be cut.
 
@@ -60,7 +60,7 @@ The critical path has three properties, and you should write them down before de
 
 This is the same discipline as identifying a workload profile. You are just doing it at the product layer instead of the data layer.
 
-## Section 3: Compare Scope Strategies Honestly
+## Compare Scope Strategies Honestly
 
 There are three common approaches to defining v1. They produce dramatically different outcomes. Pick one deliberately.
 
@@ -78,7 +78,7 @@ The strategy I default to for anything user-facing without a signed contract is 
 
 The strategy I *never* default to is Full-Scope-First. It works when the requirements are legally fixed (regulated industries, enterprise migrations). It fails when a team convinces itself it knows what users want without having asked one.
 
-## Section 4: The MVP Decision Matrix
+## The MVP Decision Matrix
 
 Once you know the critical path, every proposed v1 feature has to answer one question: **does this test the core hypothesis?**
 
@@ -97,7 +97,7 @@ The decision matrix I run every candidate feature through:
 
 The last row is the one most teams get wrong. Features are easy to add. Features are catastrophic to remove. If you can defer the decision, defer it. Every deferred feature is a decision you get to make later with more information.
 
-## Section 5: The Walking Skeleton Pattern
+## The Walking Skeleton Pattern
 
 A walking skeleton is a working version of the entire critical path, with every step implemented at the lowest possible fidelity that still counts as end-to-end.
 
@@ -120,7 +120,7 @@ Ask AI "what features should my invoicing tool have?" and you get a catalog of e
 Use this instead:
 
 > **Role:** Product-minded engineer scoping an MVP.
-> **Context:** Target user: [one-paragraph persona from Section 1]. Critical path: [one-sentence flow]. Failure blast radius for the critical path: [what happens if it breaks]. Team size: [X]. Time budget to first real user: [Y weeks].
+> **Context:** Target user: [one-paragraph persona from the user-definition step earlier]. Critical path: [one-sentence flow]. Failure blast radius for the critical path: [what happens if it breaks]. Team size: [X]. Time budget to first real user: [Y weeks].
 > **Task:** Propose the smallest walking skeleton that lets a real user complete the critical path end-to-end. For each step, name the lowest-fidelity implementation that still counts as end-to-end.
 > **Constraint:** For every feature you propose, also name what you are *deferring* and why. If you cannot defer any feature, the scope is too big.
 

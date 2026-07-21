@@ -14,7 +14,7 @@ That answer is decided at architecture time, not at incident time. By the time t
 
 {/* truncate */}
 
-## Section 1: Greenfield vs. Brownfield Failure Modes
+## Greenfield vs. Brownfield Failure Modes
 
 Before you talk about resiliency patterns, you have to know which situation you are actually in. The failure modes of a system built from scratch are the opposite of the failure modes of a system you inherited.
 
@@ -36,7 +36,7 @@ The playbook flips depending on which situation you are in.
 
 The tell for a bad decision in either mode is the same: the person proposing the change cannot articulate what will get **worse** if they do it. If everything is upside, they have not thought about it long enough.
 
-## Section 2: The Third-Party Failure You Will Actually Hit
+## The Third-Party Failure You Will Actually Hit
 
 Pick any real production system. It depends on at least one thing you do not control. A cache, a queue, a payment provider, an auth service, a database managed by someone else. That thing will fail. Not maybe. *Will.*
 
@@ -50,7 +50,7 @@ Here is what actually happens if you have not planned for it.
 
 Both of these are architecture problems, not code problems. You cannot fix them with a try/catch after the fact. You have to design the fallback before the outage happens.
 
-## Section 3: The Two Fallbacks
+## The Two Fallbacks
 
 **Read fallback: cache miss becomes database read, gated by a circuit breaker.**
 

@@ -18,7 +18,7 @@ They are orthogonal. You can mix them in any combination, and most successful te
 
 {/* truncate */}
 
-## Section 1: Deployment Topology
+## Deployment Topology
 
 The choice you make here decides how much operational work you take on, how fast you can ship, and how large a blast radius any single bug has.
 
@@ -39,7 +39,7 @@ The pattern I have seen work most often: **start with a modular monolith. Extrac
 
 Microservices are not a scaling pattern. They are an **organizational** pattern. If you have one team, you almost certainly do not need them.
 
-## Section 2: Repo Layout
+## Repo Layout
 
 Independent of topology, you have to decide how many git repos your team lives in. This one is culture-shaping.
 
@@ -59,7 +59,7 @@ The default I reach for on a small-to-medium team is **polyrepo per deployable s
 
 Note the interaction with topology: a modular monolith is naturally one repo. Microservices with strict polyrepo are the highest-coordination-cost combination out there. If you are running microservices in a polyrepo layout, either your contract testing needs to be excellent (see the resiliency post), or you should reconsider the layout.
 
-## Section 3: Framework Family
+## Framework Family
 
 The framework decision is where teams most often confuse "what I like" with "what fits the team."
 
@@ -79,7 +79,7 @@ The pattern that burns teams most often: **choosing "assemble yourself" without 
 
 Conversely, teams that pick batteries-included and try to fight it end up worse off than teams that leaned in. If you find yourself constantly working around Rails or Django, the answer is usually "you picked the wrong framework," not "let's monkey-patch."
 
-## Section 4: The Decision Tree
+## The Decision Tree
 
 For most projects, three questions decide 90% of the choice.
 
@@ -101,7 +101,7 @@ flowchart TD
 
 The tree does not produce a single answer. It produces a starting position, which is what a good architecture decision looks like: a defensible starting point plus a written trigger for when to change it.
 
-## Section 5: The Default, and the Written Reasons to Deviate
+## The Default, and the Written Reasons to Deviate
 
 For a team under 10 engineers building a new product, the written default is:
 

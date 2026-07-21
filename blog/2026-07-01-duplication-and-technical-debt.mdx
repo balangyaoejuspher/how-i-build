@@ -12,7 +12,7 @@ Standards do not stop duplication. Discipline does. And discipline needs tools, 
 
 {/* truncate */}
 
-## Section 1: Why Duplication Actually Happens
+## Why Duplication Actually Happens
 
 The common story is "developers are lazy and just copy-paste." That is wrong. Duplication is almost always created by good engineers under a bad system.
 
@@ -25,7 +25,7 @@ The real causes:
 
 Fixing duplication starts with acknowledging the systemic causes. Blaming individual developers produces a culture of quiet copy-paste. Fixing the system produces a codebase that stays coherent.
 
-## Section 2: The DRY Overcorrection
+## The DRY Overcorrection
 
 "Don't Repeat Yourself" is the most misapplied rule in software. Taken literally, it produces the opposite of maintainable code.
 
@@ -51,7 +51,7 @@ The rule I follow: **duplication of code is cheap; the wrong abstraction is expe
 
 The heuristic for "genuinely the same" is the **Rule of Three**: tolerate the first duplicate, notice the second, extract on the third. By the third occurrence, you have enough examples to see whether the abstraction is real or coincidental.
 
-## Section 3: Detecting Duplication Automatically
+## Detecting Duplication Automatically
 
 You cannot fix what you cannot see. Every serious codebase needs a duplication scanner running in CI.
 
@@ -98,7 +98,7 @@ Two supporting tools worth adding:
 - **ESLint's `no-duplicate-imports` and `import/no-duplicates` rules.** Catches the smallest form of duplication (same module imported twice in one file) before it merges.
 - **A semantic search step in code review.** Before adding a new helper, grep or IDE-search for functions with similar names or signatures. This is a habit, not a tool, but it is the single highest-value habit for reducing duplication at authoring time.
 
-## Section 4: Handling Existing Debt Without Pretending
+## Handling Existing Debt Without Pretending
 
 Technical debt is inevitable. Pretending otherwise buys you six months of quiet, followed by a rewrite you did not budget for.
 

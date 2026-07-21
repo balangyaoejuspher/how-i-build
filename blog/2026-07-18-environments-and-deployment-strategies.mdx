@@ -14,7 +14,7 @@ If you push code to production, some of this applies to you. All of it applies i
 
 {/* truncate */}
 
-## Section 1: The Vocabulary Before Anything Else
+## The Vocabulary Before Anything Else
 
 Words that get used loosely in every deploy argument.
 
@@ -40,7 +40,7 @@ Words that get used loosely in every deploy argument.
 
 If the team doesn't share these definitions, half the deploy discussions never actually agree on what happened.
 
-## Section 2: The Environment Ladder, and Where Every Team Skips a Rung
+## The Environment Ladder, and Where Every Team Skips a Rung
 
 Most orgs have some version of dev → staging → prod. Some also have preview, QA, or a separate integration environment. All of them exist to catch problems before real users do.
 
@@ -61,7 +61,7 @@ The single biggest reason "we tested it in staging" ends up in a postmortem is t
 
 If your staging is missing any of these, "we tested it in staging" is not a claim about production; it's a claim about staging. Recognize the gap explicitly.
 
-## Section 3: Deployment Strategies
+## Deployment Strategies
 
 Once code is ready to ship, you have to move it into prod. The pattern you pick decides how fast you can roll back, how much blast radius a bad deploy has, and how much infra it costs.
 
@@ -76,7 +76,7 @@ Once code is ready to ship, you have to move it into prod. The pattern you pick 
 
 The default for most services: **rolling deploys with a canary stage for anything higher-risk**. Blue/green sounds great in a whiteboard talk; in practice, its "instant rollback" claim is only true when the database migration is instantly reversible, which most aren't. See Trap 3.
 
-## Section 4: Feature Flags Decouple Deploy From Release
+## Feature Flags Decouple Deploy From Release
 
 The pattern most teams underuse. A feature flag is a runtime switch. Code ships to production behind a flag set to OFF; nobody notices. When you're ready, you flip the flag to ON gradually (1% of users, then 10%, then 100%). If something breaks, flip it back OFF instantly without a redeploy.
 
@@ -97,7 +97,7 @@ The rule that keeps a flag system sane: **every flag has an owner and a target d
 
 Real tools: [LaunchDarkly](https://launchdarkly.com/), [Statsig](https://statsig.com/), [Flagsmith](https://flagsmith.com/), [Unleash](https://www.getunleash.io/), or a homegrown table in your database plus a memoized reader. Homegrown is fine to start; migrate to a vendor when the team's flag hygiene needs help.
 
-## Section 5: Rollback, the Word That Means Different Things to Different People
+## Rollback, the Word That Means Different Things to Different People
 
 Every deploy plan should answer "how do we roll back if this goes wrong" before it ships. Not everyone means the same thing by "roll back."
 
@@ -118,7 +118,7 @@ The pattern that separates senior teams from the rest:
 
 Rollback is a discipline, not a button. Teams that treat it as a button eventually push the button and discover it wasn't wired to what they thought it was.
 
-## Section 6: Migration Safety, the Expand/Contract Pattern
+## Migration Safety, the Expand/Contract Pattern
 
 Database migrations are where most "backward-compatible" claims turn out to be false. The safe pattern is expand/contract, run over multiple deploys:
 
@@ -141,7 +141,7 @@ The anti-pattern: rename a column in one deploy. The ORM cache expects the old n
 
 For teams that use an ORM, the ORM adds a layer of risk: it caches the schema at process start. A migration that "just adds a column" invalidates that cache; queries that used `SELECT *` now include the new column, which older code doesn't know how to handle. The fix is to never `SELECT *` at the application layer, and to plan migrations expecting the ORM cache to be a moment behind.
 
-## Section 7: The Eight "We're Safe" Traps
+## The Eight "We're Safe" Traps
 
 The genuinely differentiated part of the post. Every claim below is common; every one is subtly wrong.
 
@@ -169,7 +169,7 @@ The genuinely differentiated part of the post. Every claim below is common; ever
 
 Blue/green is "instant rollback" only for the specific case of a pure code change with no persisted state change. Every other case, blue/green is roughly as slow as a rolling deploy for rollback, sometimes slower.
 
-**The fix.** Design migrations with expand/contract (Section 6) so both blue and green can operate against the schema during any window. If a change is fundamentally not blue/green-safe (destructive migration, incompatible protocol change), say so in the deploy plan and use a different strategy.
+**The fix.** Design migrations with expand/contract (discussed above) so both blue and green can operate against the schema during any window. If a change is fundamentally not blue/green-safe (destructive migration, incompatible protocol change), say so in the deploy plan and use a different strategy.
 
 ### Trap 4: "We deploy with zero downtime"
 
@@ -251,7 +251,7 @@ That prompt turns "review" from validation into adversarial reading. What comes 
 
 **Every "we tested it" claim is a claim about a specific environment under specific conditions, not a general statement of safety.**
 
-Every trap in Section 7 exists because someone made a general claim from a specific test. The fix is not more testing (though that helps). The fix is the *habit* of naming the specific claim: "we tested it in staging, which has 5% of prod's traffic and no live payment integration; the specific things that claim covers are X and Y; the specific things it does not cover are Z."
+Every trap in the "we're safe" discussion above exists because someone made a general claim from a specific test. The fix is not more testing (though that helps). The fix is the *habit* of naming the specific claim: "we tested it in staging, which has 5% of prod's traffic and no live payment integration; the specific things that claim covers are X and Y; the specific things it does not cover are Z."
 
 That habit takes an extra 30 seconds per deploy. It saves the incident where you shipped confidently and were wrong. Senior engineers do this without thinking about it. Junior engineers get taught it (or learn it the hard way after their first bad deploy).
 

@@ -16,7 +16,7 @@ Architecture is the set of decisions you make at the whiteboard. Standards are t
 
 {/* truncate */}
 
-## Section 1: Decoupling Is a Guardrail, Not an Aesthetic
+## Decoupling Is a Guardrail, Not an Aesthetic
 
 The single most valuable architectural constraint to enforce: **business logic must not know about the framework it runs inside.**
 
@@ -45,7 +45,7 @@ flowchart TD
 
 The tell that a codebase has broken this rule is easy to spot. Grep the domain folder for `express`, `postgres`, `axios`, `aws-sdk`. If any of those imports appear inside pure business logic, the guardrail is already gone. Restore it before adding one more feature.
 
-## Section 2: Linting and Formatting Are Non-Negotiable
+## Linting and Formatting Are Non-Negotiable
 
 Every project I ship has three things running before code can merge: a formatter, a linter, and a type checker. All three are enforced by CI, not by human vigilance.
 
@@ -55,7 +55,7 @@ Every project I ship has three things running before code can merge: a formatter
 
 The default configurations are too permissive. Turn on the strict presets, then delete the exceptions your team wants to add back. Every "temporary" lint rule disable becomes permanent, and each one is a hole you carved yourself.
 
-## Section 3: The CI Pipeline as a Production Contract
+## The CI Pipeline as a Production Contract
 
 A CI pipeline is not a "run the tests" script. It is the written contract for what your team refuses to ship. If a rule matters, it lives in the pipeline. If it does not live in the pipeline, it does not matter.
 

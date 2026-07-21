@@ -14,7 +14,7 @@ This post is about that discipline: which myths need to die, which facts have to
 
 {/* truncate */}
 
-## Section 1: Myths and Facts
+## Myths and Facts
 
 Every technology goes through a phase where the hype exceeds the reality. AI coding assistants are in that phase now. Four myths worth naming directly:
 
@@ -36,7 +36,7 @@ Fact: The productivity metric is *shipped correct behavior*. Time-to-generate is
 
 None of these myths mean you should not use AI. They mean you should not confuse the tool with the discipline.
 
-## Section 2: The Blind-Paste Antipattern
+## The Blind-Paste Antipattern
 
 The single most damaging habit in AI-assisted development: pasting a generated snippet into a codebase without reading it line by line. It is fast, it feels productive, and it is how most AI-caused bugs enter production.
 
@@ -62,7 +62,7 @@ The rule that fixes all four: **you may not commit code you cannot explain in a 
 
 Not "you should not." *You may not.* If you cannot narrate what every line does and why, either read it until you can, rewrite it in your own idiom, or reject the suggestion. The AI is a collaborator, not an author. Authorship still belongs to you, along with all the responsibility that word implies.
 
-## Section 3: The Correct Workflow for AI-Assisted Code
+## The Correct Workflow for AI-Assisted Code
 
 The workflow that keeps AI useful without letting it degrade the codebase has six steps. Every one of them matters.
 
@@ -90,7 +90,7 @@ A model that generated the code cannot be trusted to write the test that validat
 
 Not for credit. For future debuggers who need to know that a human reviewed the reasoning, and which parts came from where. "AI-assisted; reviewed and adapted" is a useful signal in a git log two years from now.
 
-## Section 4: Agents Specifically
+## Agents Specifically
 
 An agent is an AI that can execute tools on its own: edit files, run commands, open pull requests, call APIs. Everything in the previous section still applies. But agents introduce new failure modes that plain code suggestions do not.
 
@@ -114,7 +114,7 @@ File edits, terminal commands, network calls. When an agent goes sideways with n
 
 Deleting files, dropping tables, force-pushing, deploying, sending messages, spending money. These are actions where "the agent decided to" is not an acceptable postmortem sentence. If your agent config allows any of these without human confirmation, change it before the incident.
 
-## Section 5: The Meta-Prompt for AI-Assisted Work
+## The Meta-Prompt for AI-Assisted Work
 
 Every earlier post in this series shows a prompt structured to force the model to do real engineering. This one is different. It is the prompt for using the model itself.
 

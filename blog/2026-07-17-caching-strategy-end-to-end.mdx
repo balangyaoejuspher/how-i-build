@@ -12,7 +12,7 @@ This post is caching laid out from beginner to advanced, with the same "we're sa
 
 {/* truncate */}
 
-## Section 1: The Vocabulary You Need Before Anything Else
+## The Vocabulary You Need Before Anything Else
 
 Learn these. They come up in every caching argument.
 
@@ -34,7 +34,7 @@ Learn these. They come up in every caching argument.
 
 If you can agree on these words with your team, half the caching arguments never happen.
 
-## Section 2: Where Caches Live
+## Where Caches Live
 
 Every real system has *many* caches, at every layer between the user and the database. Naming them is the first step to not being surprised by them.
 
@@ -51,7 +51,7 @@ Every real system has *many* caches, at every layer between the user and the dat
 
 Every one of these is a cache with its own TTL, its own invalidation model, and its own failure mode. When someone says "we cached it," ask *which layer*. The answers are radically different.
 
-## Section 3: Cache Patterns and Their Trade-offs
+## Cache Patterns and Their Trade-offs
 
 Beyond "we put it in Redis," there are named patterns with different consistency and failure characteristics.
 
@@ -86,7 +86,7 @@ async function getUser(id: string): Promise<User> {
 
 The default I reach for: **cache-aside**. Simple, obvious, easy to reason about. Only deviate when there's a specific reason (high write throughput, predictable hot keys, write-heavy workload).
 
-## Section 4: Cache Keys, the Boring Detail That Decides Everything
+## Cache Keys, the Boring Detail That Decides Everything
 
 Bad key design is the single most common cause of cache-related incidents I have seen. Get this right early, or spend years untangling it.
 
@@ -129,7 +129,7 @@ export const cacheKeys = {
 
 One import. No stringly-typed keys anywhere else. Every service produces identical keys for identical data. This is the single highest-value refactor in most caching codebases.
 
-## Section 5: TTL, the Number Nobody Thinks About Long Enough
+## TTL, the Number Nobody Thinks About Long Enough
 
 TTL is where every caching design silently commits to a consistency policy. "One hour" is not an answer; it's a placeholder.
 
@@ -146,11 +146,11 @@ Two TTL patterns worth knowing:
 
 **Jittered TTLs.** If you set every cache entry to 60-second TTL and they all fill at the same time, they all expire at the same time, and every miss hits the DB simultaneously. Add ±10% jitter (`ttl + random(-6s, +6s)`) to spread expiration.
 
-**Two-tier TTL.** Set a "soft" TTL (e.g., 60s) and a "hard" TTL (e.g., 300s). Between soft and hard, serve the stale value but trigger a background refresh (see stale-while-revalidate, Section 7). After hard, refuse to serve stale. Best of both worlds for read-heavy hot data.
+**Two-tier TTL.** Set a "soft" TTL (e.g., 60s) and a "hard" TTL (e.g., 300s). Between soft and hard, serve the stale value but trigger a background refresh (see the stale-while-revalidate discussion below). After hard, refuse to serve stale. Best of both worlds for read-heavy hot data.
 
 The default I reach for: **jittered TTL at the freshness bound + explicit invalidation on write for critical paths**. TTL as the backstop, invalidation as the primary. See next section.
 
-## Section 6: Invalidation, the Actually Hardest Problem
+## Invalidation, the Actually Hardest Problem
 
 TTL alone doesn't guarantee correctness; it guarantees an *upper bound on staleness*. If you need "user sees their own updates immediately," TTL is not enough.
 
@@ -188,7 +188,7 @@ Three important details:
 - **Delete, don't update.** Updating the cache in-place from the writer risks race conditions. Delete is idempotent and safe.
 - **Publish an event.** Other services or other regions can subscribe. Even if you don't need it today, you will.
 
-## Section 7: Stale-While-Revalidate and Stale-If-Error
+## Stale-While-Revalidate and Stale-If-Error
 
 The killer feature most application caches ignore. Standard in HTTP (RFC 5861) and CDNs; underused in Redis / application layers.
 
@@ -227,7 +227,7 @@ Reader always sees a value in one round-trip. Fresh data is loaded in the backgr
 
 This one pattern eliminates most of the "cache miss = latency spike" problems teams try to solve with bigger caches.
 
-## Section 8: Thundering Herd, and How to Not Get Trampled
+## Thundering Herd, and How to Not Get Trampled
 
 Also called cache stampede or dogpile. The scenario: a hot cached key expires. Ten thousand concurrent requests all miss, all try to fetch from the source of truth, all try to fill the cache. The source of truth (probably your database) collapses under load it usually never sees.
 
@@ -268,11 +268,11 @@ Per-process coalescing. For cross-process (i.e., across multiple app instances),
 
 **Precomputed refresh.** For truly hot keys, don't rely on request-triggered refresh at all. Run a background job that refreshes the cache on a schedule.
 
-**Stale-while-revalidate.** From Section 7. The refresh happens in the background; only the *first* request past the soft TTL kicks it off (singleflight-style).
+**Stale-while-revalidate.** From the stale-while-revalidate discussion above. The refresh happens in the background; only the *first* request past the soft TTL kicks it off (singleflight-style).
 
 The simplest starting point: **stale-while-revalidate + singleflight**. Together they eliminate ~95% of thundering herd scenarios in real workloads.
 
-## Section 9: The Eight "We're Safe" Traps
+## The Eight "We're Safe" Traps
 
 The genuinely differentiated part of this post. Every one of these claims is common; every one is subtly wrong.
 
@@ -334,7 +334,7 @@ Also: if a concurrent read misses just before your delete, refills the cache fro
 
 - **Read-race**: two readers miss simultaneously, both fetch from DB, both write to cache. Wasted DB work.
 - **Write-race**: a reader misses and starts fetching. A writer updates the DB and deletes the cache. The reader (with a stale value in memory) writes back after the delete. The stale value is now cached for the full TTL.
-- **Dogpile**: hot key expires, everyone misses, everyone hits the DB. Thundering herd (Section 8).
+- **Dogpile**: hot key expires, everyone misses, everyone hits the DB. Thundering herd, discussed below.
 
 **The fix.** Singleflight for read-race and dogpile. Delete-after-commit and (for critical data) versioned keys for write-race. See Sections 6 and 8.
 
@@ -348,7 +348,7 @@ Also: some code paths use the cache as more than just optimization. Distributed 
 
 **The fix.** Load-test your DB (and the rest of the system) at 100% traffic with the cache disabled. If the answer is "the system dies," design a fallback (see the [BullMQ resilience post](/real-world-resilience-bullmq-and-contracts) and the [designing for resiliency post](/designing-for-resiliency)). At minimum: a circuit breaker on the DB, so a cache outage doesn't turn into a DB outage.
 
-## Section 10: Distributed Cache Pitfalls
+## Distributed Cache Pitfalls
 
 For teams running multi-region or multi-cluster caches, some traps are unique to that scale:
 
@@ -385,6 +385,6 @@ The last constraint is what makes this prompt worth using. Most cache "designs" 
 
 Every cache in your system encodes a specific answer to "how stale can this data be before someone gets hurt?" If nobody on the team can quote that answer for every cache, you don't have a caching strategy; you have a shared hallucination.
 
-Write the answer down for every cache. Enforce the TTL, the invalidation, and the fallback with real code and real tests. Load-test the world without the cache; know exactly what fails when Redis dies. Assume every "we're safe" claim in Section 9 was made by a smart engineer who is now debugging why it wasn't true.
+Write the answer down for every cache. Enforce the TTL, the invalidation, and the fallback with real code and real tests. Load-test the world without the cache; know exactly what fails when Redis dies. Assume every "we're safe" claim above was made by a smart engineer who is now debugging why it wasn't true.
 
 Fast is easy. Fast *and correct* under partial failure is where senior engineering shows up. The whiteboard is where that starts.

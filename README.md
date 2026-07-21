@@ -11,7 +11,7 @@ Live at **https://balangyaoejuspher.github.io/how-i-build/**
 
 ## What this is
 
-The blog is organized around a seven-phase framework, published in reading order:
+The blog is organized around a seven-chapter framework, published in reading order:
 
 1. **Foundation.** Users, MVP, critical path, workload profile, first-order architecture.
 2. **Tech Stack.** Package selection, version pinning, database schema, primary-key strategy, auth and identity, API design.

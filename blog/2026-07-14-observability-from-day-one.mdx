@@ -8,13 +8,13 @@ slug: /observability-from-day-one
 
 Every production system I have ever inherited without observability has the same characteristic: when something breaks, people guess. They guess whether the database is slow, guess whether the queue is backed up, guess whether the third-party API is down. And every guess is a 20-minute detour that turns a 10-minute problem into a 4-hour incident.
 
-Observability is not a Phase 4 nice-to-have. It goes on the whiteboard the same day you draw the first architecture diagram. If you ship without it, your first bad incident is going to teach you what "without it" actually costs, and the lesson is expensive.
+Observability is not a Chapter 4 nice-to-have. It goes on the whiteboard the same day you draw the first architecture diagram. If you ship without it, your first bad incident is going to teach you what "without it" actually costs, and the lesson is expensive.
 
 This post is what I mean by "from day one," what the three pillars actually do, the three questions every service must answer, and how to avoid the cost traps that make observability a line item nobody wants to defend.
 
 {/* truncate */}
 
-## Section 1: The Three Pillars, and What Each Is Actually For
+## The Three Pillars, and What Each Is Actually For
 
 You will read a lot of vendor content that treats logs, metrics, and traces as interchangeable. They are not. Each answers a different question, and skipping any one of them leaves a category of incident you cannot debug.
 
@@ -28,7 +28,7 @@ The mistake most teams make is picking one and pretending it covers the other tw
 
 Use all three. Not because it is fashionable, because each one closes a class of blind spot the others create.
 
-## Section 2: The Three Questions Every Service Must Answer
+## The Three Questions Every Service Must Answer
 
 Before you buy any tool, write down these three questions and confirm your telemetry can answer them in under five minutes:
 
@@ -42,7 +42,7 @@ That third question is where change tracking earns its budget. Every deploy, eve
 
 If your telemetry cannot answer these three questions in under five minutes, you do not have observability. You have logging that you paid a lot of money for.
 
-## Section 3: Structured Everything, or the Data Is Worthless
+## Structured Everything, or the Data Is Worthless
 
 Free-text logs are technical debt on arrival. Every log line must be structured (JSON is fine, protobuf is fine, some vendors have their own format) with named fields you can query. `"user 42 tried to buy product 99 but got charged twice"` is a story; `{"user_id": 42, "product_id": 99, "event": "double_charge_detected", "amount_cents": 12000, "currency": "USD"}` is queryable.
 
@@ -56,7 +56,7 @@ The correlation ID is the single most important structural detail. When a reques
 
 Retrofitting correlation IDs into a running system is painful. Adding them on day one is trivial. Do it on day one.
 
-## Section 4: OpenTelemetry as the Interface
+## OpenTelemetry as the Interface
 
 The single most important tooling decision you make is separating "how your app emits telemetry" from "who stores it."
 
@@ -108,7 +108,7 @@ service:
 
 Two things to notice. The application code emits OTel; the collector decides where each signal goes. You can send traces to one vendor and metrics to another, or dual-write to both during a migration. You can also add a filesystem or Kafka exporter for archival, without touching a single application service.
 
-## Section 5: SLOs Before Dashboards
+## SLOs Before Dashboards
 
 The most common failure mode of "we invested in observability" is building 47 dashboards nobody reads, alerting on 200 metrics nobody understands, and paying a five-figure monthly bill for the privilege.
 
@@ -126,7 +126,7 @@ Every alert should fire only on SLO burn, not on raw metrics. "CPU is above 80%"
 
 Google's SRE book has the canonical treatment of SLOs and error budgets. Read it once, apply the parts that fit your scale, ignore the parts that assume you are Google.
 
-## Section 6: What to Log, What Not to Log
+## What to Log, What Not to Log
 
 The cost of observability at scale is dominated by ingest and retention. Two categories will explode your bill without you noticing:
 
@@ -142,7 +142,7 @@ Two categories will bury you in a security incident:
 
 The rule I use: **every service defines a `Logger` wrapper that enforces redaction rules and structured fields. Direct `console.log` or `logger.info(raw)` calls fail lint.** One wrapper. Enforced by CI. Never a leak of the kind that makes headlines.
 
-## Section 7: DIY Stack vs SaaS
+## DIY Stack vs SaaS
 
 Every team eventually asks whether to run their own observability stack or pay a vendor. Both are valid at different scales.
 
@@ -164,7 +164,7 @@ The pattern I default to for teams over 20 engineers with heavy compliance requi
 
 Never mix and match randomly. If you send logs to Datadog and metrics to Grafana and traces to Jaeger, correlating across them is manual and painful. Pick one destination per signal type, or pick one destination for everything.
 
-## Section 8: The Anti-Patterns That Kill Observability
+## The Anti-Patterns That Kill Observability
 
 Common ways teams get observability wrong even after buying the tools:
 

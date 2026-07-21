@@ -14,7 +14,7 @@ None of it is glamorous. All of it will still be there in 2035.
 
 {/* truncate */}
 
-## Section 1: Which Database Engine
+## Which Database Engine
 
 The question "what database should I use?" gets answered wrong by defaulting to whatever is trending on Hacker News. The right way to answer it is to name the workload (read-heavy, write-heavy, mixed), name the consistency requirements, name the query patterns (single-row lookups, joins, aggregations, graph traversal, full-text search), and then look at the table.
 
@@ -63,7 +63,7 @@ The dishonest cases (where you should have picked Postgres):
 - "We need schema flexibility." Postgres has JSONB. Store the flexible parts as JSONB, keep the relational parts relational. You get both.
 - "MongoDB is easier to start with." It is easier to *start* with. It is significantly harder to *fix* when your access patterns evolve and you now need joins the schema was not designed for.
 
-## Section 2: Naming Conventions
+## Naming Conventions
 
 Naming conventions are the cheapest thing in this post and the one that causes the most silent long-term pain when neglected. Pick the rules, write them down (System DNA, per the earlier post), and enforce them via linting or code review.
 
@@ -131,7 +131,7 @@ CREATE INDEX idx_orders_customer_id_created_at
 
 Note the specific choices: `BIGINT` internal id, `UUID public_id` for external references (see next section), `CITEXT` for case-insensitive email, `TIMESTAMPTZ` throughout, money in cents with paired currency, named constraints, named index, partial index that excludes soft-deleted rows.
 
-## Section 3: Primary Keys, and Why This Matters More Than You Think
+## Primary Keys, and Why This Matters More Than You Think
 
 The primary key decision has downstream effects on index performance, security, sharding, API design, and debugging. Get it wrong at the start and every table inherits the wrong choice.
 
@@ -158,7 +158,7 @@ Every table has two identifier columns: an internal `id BIGINT` used for foreign
 - Cursor-based pagination that works out of the box (order by `public_id`).
 - The internal count is not leaked to external clients.
 
-This is what the schema example in Section 2 uses. It is the option I default to on any new project where I control both the database and the API.
+This is what the schema example in the naming-conventions discussion above uses. It is the option I default to on any new project where I control both the database and the API.
 
 **Option B: UUID v7 as the sole primary key.**
 
@@ -181,7 +181,7 @@ This is the option to choose when you know you will be distributing ID generatio
 - **UUID v4 as a primary key on a large table in Postgres or MySQL.** Random UUIDs destroy the B-tree index locality that these engines depend on. Every INSERT touches a random page. Write throughput drops by 3x to 10x compared to sequential keys. The internet is full of blog posts documenting this. Do not learn it the hard way.
 - **Auto-increment INT (not BIGINT).** Yes, most systems will never hit 2.1 billion rows. Some will. The cost of migrating an `INT` primary key to `BIGINT` on a live table is enormous. The cost of picking `BIGINT` from the start is zero. This is the definition of a decision you make once, cheaply, and never revisit.
 
-## Section 4: The Cross-Cutting Conventions Nobody Documents
+## The Cross-Cutting Conventions Nobody Documents
 
 Beyond naming and keys, four decisions that quietly matter:
 

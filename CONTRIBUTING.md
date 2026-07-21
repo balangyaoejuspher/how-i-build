@@ -6,7 +6,7 @@ Before you open a PR, read the rules below. PRs that don't follow them will be a
 
 ## What kind of PRs are welcome
 
-- **New blog posts** that fit an existing phase of the framework, or that argue for a new phase.
+- **New blog posts** that fit an existing chapter of the framework, or that argue for a new chapter.
 - **Corrections and clarifications** in existing posts.
 - **Typo fixes and broken-link reports.**
 - **Diagram improvements** (Mermaid diagrams that render better, correct incorrect flows).
@@ -17,7 +17,7 @@ Before you open a PR, read the rules below. PRs that don't follow them will be a
 - Rewrites of existing posts to match a different voice. The voice is deliberate.
 - SEO-driven keyword stuffing.
 - Sponsored or affiliate content.
-- Posts arguing "AI will replace developers" or the mirror position "AI is useless."  The blog's stance on AI is documented across Phase 5; contradicting it is fine, misrepresenting it is not.
+- Posts arguing "AI will replace developers" or the mirror position "AI is useless."  The blog's stance on AI is documented across Chapter 5; contradicting it is fine, misrepresenting it is not.
 
 ## Post structure
 
@@ -69,8 +69,8 @@ The voice is deliberate. Following these rules is not optional.
 
 Every post must map to a section in [context-blueprint.md](./context-blueprint.md). This file is the canonical outline of the series.
 
-- Adding a post that extends an existing phase: update the phase's subsection in the same PR.
-- Adding a post for a topic not in the blueprint: add a new subsection (or a new phase, if genuinely new territory) in the same PR.
+- Adding a post that extends an existing chapter: update the chapter's subsection in the same PR.
+- Adding a post for a topic not in the blueprint: add a new subsection (or a new chapter, if genuinely new territory) in the same PR.
 - If your post reshapes the blueprint's structure, the reshape belongs in the PR.
 
 Note: `context-blueprint.md` is gitignored on `main` in the deployed site, but it lives in the repo for exactly this purpose. Check the file locally before writing.

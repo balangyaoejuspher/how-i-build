@@ -14,7 +14,7 @@ If you build software that has users, some of this applies to you. All of it app
 
 {/* truncate */}
 
-## Section 1: Three Words That Are Not the Same
+## Three Words That Are Not the Same
 
 Most auth bugs come from conflating three concepts that sound similar and mean different things.
 
@@ -32,7 +32,7 @@ The three are separable in design and often separate in implementation:
 
 Every place these three get merged into "the auth code" is a place a bug will eventually hide. Separate them mentally, separate them in your code, and half the ambient auth pain goes away.
 
-## Section 2: Session vs JWT, the Trade-off Table No Tutorial Writes
+## Session vs JWT, the Trade-off Table No Tutorial Writes
 
 The last decade of frontend fashion has convinced a lot of teams that server-side sessions are old and JWTs are modern. That is wrong. They are different tools with different trade-offs.
 
@@ -57,9 +57,9 @@ Two things worth calling out:
 
 **"Just use JWTs for everything" is a failure mode.** The most common bug in JWT-based systems is that when a user changes their password or gets fired, their existing tokens remain valid until they expire. If your JWT has a 24-hour TTL and someone is compromised, you have a 24-hour window where the attacker holds a valid token you cannot invalidate. That is fine for a hobby project, catastrophic for a payments system.
 
-The pattern that works well: **short-lived JWTs (5 to 15 minutes) plus a refresh token backed by a server-side store**. You get most of the statelessness benefit of JWTs plus most of the revocability benefit of sessions. See Section 4.
+The pattern that works well: **short-lived JWTs (5 to 15 minutes) plus a refresh token backed by a server-side store**. You get most of the statelessness benefit of JWTs plus most of the revocability benefit of sessions. See the token lifecycle discussion below.
 
-## Section 3: OAuth 2.1 Grants, and Which to Actually Use in 2026
+## OAuth 2.1 Grants, and Which to Actually Use in 2026
 
 OAuth is not authentication. OAuth is a framework for delegating authorization, most commonly used to let one system access another on a user's behalf. It's often paired with OpenID Connect (OIDC), which adds an identity layer on top so the delegated system also knows who the user is.
 
@@ -70,7 +70,7 @@ OAuth 2.1 (the modern consolidation of OAuth 2.0's best practices) has narrowed 
 | **Authorization Code + PKCE**    | Any user-facing app: web, mobile, SPA, desktop.              | The default. PKCE (Proof Key for Code Exchange) protects against interception even without a client secret. Required for public clients. |
 | **Client Credentials**           | Service-to-service (no user involved).                       | The client authenticates itself with a client ID and secret and receives a token. No user context. |
 | **Device Code**                  | Devices with no browser (smart TVs, CLIs, IoT setup).        | User authenticates on a separate device using a short code. |
-| **Refresh Token**                | Any flow that issues an access token.                        | Not a standalone grant; used to obtain a new access token when the old one expires. Should always rotate (see Section 4). |
+| **Refresh Token**                | Any flow that issues an access token.                        | Not a standalone grant; used to obtain a new access token when the old one expires. Should always rotate (see the token lifecycle discussion below). |
 | ~~Implicit~~ (deprecated)        | Do not use.                                                  | Original SPA flow. Replaced by Authorization Code + PKCE.    |
 | ~~Resource Owner Password~~ (deprecated) | Do not use.                                          | Client collects the user's password directly. Defeats most of the point of OAuth. |
 
@@ -83,7 +83,7 @@ OIDC sits on top of OAuth and adds:
 
 Use OIDC when you want authentication (login), not just authorization. Most managed identity providers (Auth0, Okta, Google, Microsoft Entra) speak OIDC. Building your own OIDC provider is possible but rarely worth it.
 
-## Section 4: Token Lifecycle, and Why Rotation Matters
+## Token Lifecycle, and Why Rotation Matters
 
 The token strategy that has emerged as the industry standard for OAuth-based auth:
 
@@ -134,7 +134,7 @@ The reuse-detection line is the important one. If an attacker steals a refresh t
 
 The reference for all of this is [RFC 6749](https://datatracker.ietf.org/doc/html/rfc6749), [RFC 6750](https://datatracker.ietf.org/doc/html/rfc6750), and the OAuth 2.1 draft. Read them once, not because you will implement them by hand, but because you should recognize when your library is doing the wrong thing.
 
-## Section 5: Authorization Models, Beyond If-Statements
+## Authorization Models, Beyond If-Statements
 
 Once you have an authenticated user, the question is: what are they allowed to do? Three models scale, and the answer depends on your product's data model.
 
@@ -164,7 +164,7 @@ Once you have an authenticated user, the question is: what are they allowed to d
 
 Start with RBAC. Migrate to ABAC or ReBAC when RBAC breaks. Do not start with ReBAC unless your product is fundamentally about sharing.
 
-## Section 6: Common Leak Patterns That Keep Showing Up
+## Common Leak Patterns That Keep Showing Up
 
 The failure modes below appear in real breach postmortems every year. Every one of them is preventable at design time.
 
@@ -196,7 +196,7 @@ Missing any of these is a bug. `SameSite=None` is only for third-party embedding
 
 **Secrets in git.** JWT signing keys, database passwords, third-party API secrets. Once committed to git, they are compromised even if you rebase them out (they may be cached in mirrors, in CI logs, in forks). Rotate immediately if you find one. Use a secret manager (AWS Secrets Manager, GCP Secret Manager, HashiCorp Vault, doppler, 1Password Secrets) from day one.
 
-## Section 7: Service-to-Service Auth
+## Service-to-Service Auth
 
 User auth is only half the story. In a microservices system, service A calls service B, and B needs to know two things: (1) is the caller allowed to make this call, and (2) which user is this request acting on behalf of.
 
@@ -210,7 +210,7 @@ Three patterns dominate:
 
 For user-context propagation across service chains: never trust a downstream service's claim about "who the user is" unless the claim is cryptographically verifiable. Pass the user's original token (or a service-signed derivative of it) through every hop, and verify at every hop. Do not pass a plain `user_id` header; a compromised or misconfigured service could set that header to any value.
 
-## Section 8: Managed Auth vs DIY
+## Managed Auth vs DIY
 
 Every team eventually decides: use a managed identity provider or build it yourself. Both are defensible; the wrong call is expensive.
 

@@ -14,7 +14,7 @@ This post is API design and versioning laid out from beginner to advanced, with 
 
 {/* truncate */}
 
-## Section 1: The Vocabulary You Need Before Anything Else
+## The Vocabulary You Need Before Anything Else
 
 If you're new to API design, learn these five terms. If you're not new, skim to make sure your team's definitions match.
 
@@ -34,7 +34,7 @@ If you're new to API design, learn these five terms. If you're not new, skim to 
 
 If your team can define all of these in the same words, half of the arguments about API changes disappear.
 
-## Section 2: Pick the Right API Style
+## Pick the Right API Style
 
 Before we get into versioning, pick a style. Most teams inherit one, and that's fine, but new services deserve a real decision.
 
@@ -47,7 +47,7 @@ Before we get into versioning, pick a style. Most teams inherit one, and that's 
 
 The default for a new public API from a small team: **REST + JSON with strict schema validation**. Boring, well-understood, tooling everywhere. Deviate only when you can name the specific reason.
 
-## Section 3: Versioning Strategies
+## Versioning Strategies
 
 Once your API has real callers, you cannot change it in place without breaking them. Versioning is how you evolve.
 
@@ -64,7 +64,7 @@ The default for a new API: **URL path versioning starting at `/v1`**. It's the e
 
 The advanced pattern for products with sophisticated integrations: **date-based versioning à la Stripe**. Every caller pins to a specific date, the server supports all dates in a window (usually a year), and breaking changes ship as new dates. It's expensive to build and maintain, but it's the only strategy that lets you keep evolving without ever asking any caller to migrate on your schedule. Do not adopt this unless you have a real reason.
 
-## Section 4: The Eight Ways You Only Think Your API Is Safe
+## The Eight Ways You Only Think Your API Is Safe
 
 This is the part of the post most teams need. Every one of these traps has a specific "we're safe because [X]" claim that turns out to be false in a specific way.
 
@@ -130,7 +130,7 @@ This is the part of the post most teams need. Every one of these traps has a spe
 - Rate-limit responses and their headers.
 - Retries after 5xx responses.
 
-**The fix.** Contract tests (see Section 5) that assert both success and failure paths. Fuzz tests on request payloads. Explicit tests for each documented error response. And a rule that every new endpoint ships with at least three failure-path tests before merge.
+**The fix.** Contract tests (see the contract testing discussion below) that assert both success and failure paths. Fuzz tests on request payloads. Explicit tests for each documented error response. And a rule that every new endpoint ships with at least three failure-path tests before merge.
 
 ### Trap 7: "We only added an optional field"
 
@@ -148,7 +148,7 @@ This is the part of the post most teams need. Every one of these traps has a spe
 
 **The fix.** A shared schema definition (Protobuf, JSON Schema, OpenAPI components, or a shared TypeScript types package) that every producer and consumer uses. The schema is the source of truth. JSON is the wire format, not the design.
 
-## Section 5: Contract Testing, When It Works and When It Doesn't
+## Contract Testing, When It Works and When It Doesn't
 
 Contract testing is the practice of writing tests that describe the API contract from the *consumer's* perspective, then running those tests in the *producer's* CI. If the producer breaks a contract a consumer depends on, the producer's build fails.
 
@@ -168,7 +168,7 @@ Contract testing is not free. It requires cross-team discipline. Deploy it when 
 
 For event-driven systems, the equivalent is a **schema registry** (Confluent Schema Registry, Buf Schema Registry, or a homegrown JSON Schema store) that enforces backward compatibility at publish time. Every schema change is checked against every historical version of every consumer's expectations before the schema is accepted.
 
-## Section 6: Deprecation and Sunset, Done Right
+## Deprecation and Sunset, Done Right
 
 The advanced version of the "we deprecated it" trap fix. Complete process from announcement to removal:
 
@@ -195,7 +195,7 @@ Day 210  Remove the code entirely.
 
 The dates are flexible; the discipline is not. Every deprecation that survives contact with a real caller has a paper trail like this. Every deprecation that doesn't leaks into an incident on Day 180.
 
-## Section 7: Schema Evolution Rules
+## Schema Evolution Rules
 
 For the advanced case, when you're maintaining a schema over years across multiple consumers, the rules that keep you sane:
 
@@ -210,7 +210,7 @@ For the advanced case, when you're maintaining a schema over years across multip
 
 Most teams need backward compatibility only. Full compatibility is expensive and usually not worth it.
 
-## Section 8: API Design Anti-Patterns
+## API Design Anti-Patterns
 
 Not comprehensive; the ones I keep seeing in code review:
 
@@ -244,6 +244,6 @@ That prompt turns "review" from a vibe into a classification. The output is some
 
 **A safe API is a state you maintain, not a state you reach.**
 
-Every "we're safe" claim from Section 4 was true the day someone said it. All of them became false when someone shipped a change without checking. Safety is the byproduct of running through the checklist every single time, forever. The moment the team stops running the checklist, safety decays.
+Every "we're safe" claim from earlier in this post was true the day someone said it. All of them became false when someone shipped a change without checking. Safety is the byproduct of running through the checklist every single time, forever. The moment the team stops running the checklist, safety decays.
 
 Which is why the smartest teams I have worked with don't say "we're safe." They say "here is what would have to break for us to be unsafe, and here is the automated check that catches it." Every "we're safe" claim in this post has an automated check attached to it. Build those, run those, trust those, and you can honestly answer the question. Anything less is a claim you cannot defend when a consumer walks in tomorrow with a broken build and asks you what happened.

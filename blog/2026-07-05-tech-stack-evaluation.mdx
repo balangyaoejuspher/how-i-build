@@ -16,7 +16,7 @@ Choosing a tech stack is a risk management exercise. Here is how I do it.
 
 {/* truncate */}
 
-## Section 1: The Package Selection Matrix
+## The Package Selection Matrix
 
 Before I run `npm install anything`, the package has to pass this checklist. Every item is a "no ship" if it fails.
 
@@ -46,7 +46,7 @@ Run `npm audit` before adopting. Check whether the package is enrolled in Depend
 
 If a package passes all six, it is a candidate. If it fails even one, you either write the code yourself, pick a different package, or accept the risk in writing.
 
-## Section 2: Version Pinning Is Not Optional
+## Version Pinning Is Not Optional
 
 The default behavior of `npm install <package>` is to write a caret range to your `package.json`:
 

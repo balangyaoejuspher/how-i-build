@@ -18,7 +18,7 @@ Architecture is not a taste preference. It is a direct response to how your syst
 
 This post is about the step every team skips: **defining the workload before writing a line of code.**
 
-## Section 1: The Read-Heavy Workload
+## The Read-Heavy Workload
 
 A read-heavy workload is any system where **reads outnumber writes by at least an order of magnitude**, and where the *same* data is served to many consumers.
 
@@ -35,7 +35,7 @@ If that describes your system, your architecture priorities are non-negotiable:
 
 The database is almost never your bottleneck in a read-heavy system. **The network is.** Architect accordingly.
 
-## Section 2: The Write-Heavy / Transactional Workload
+## The Write-Heavy / Transactional Workload
 
 A write-heavy workload is any system where **correctness of state matters more than latency**, and where multiple writers can touch the same record.
 
