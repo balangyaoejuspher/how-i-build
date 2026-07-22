@@ -1,0 +1,267 @@
+---
+title: "How I Build: Debugging as a Discipline, Not a Vibe. The Mental Model That Beats Random Code Changes and Beats Asking AI Why It Broke"
+authors: [balangyaoejuspher]
+tags: [craft, standards]
+date: 2026-07-22
+slug: /debugging-as-a-discipline
+---
+
+Debugging is the single most-used skill in professional software engineering, and almost nobody was taught it. You learned by osmosis. Someone senior showed you a trick at a whiteboard. You picked up a debugger by accident. You developed a personal ritual (rerun the test, add prints, rerun again) that mostly works, occasionally saves you, and occasionally has you burning eight hours on a bug that would have taken forty minutes if approached differently.
+
+The engineers I trust the most in incidents are the ones who treat debugging as a discipline, not a vibe. Same tools, same access, same code, but a *systematic process* that gets to the answer faster and more reliably. That process is what this post is about.
+
+If you write code, this applies to you. If you're on-call, all of it applies. If you interview engineers, [the debug round from the Hiring post](/hiring-engineers-what-i-look-for) is testing whether they have this discipline, whether they know it or not.
+
+{/* truncate */}
+
+## The Vocabulary Before Anything Else
+
+Words that get thrown around every debugging session, often loosely.
+
+**Bug.** A specific defect in the code (or config, or data) that produces incorrect behavior. Bugs are usually reproducible with enough effort.
+
+**Incident.** A production event where the system does something users notice. An incident may be caused by one bug, several bugs, a config change, an infrastructure failure, or nothing anyone would call a "bug."
+
+**Reproduction (repro).** A specific set of steps or inputs that reliably triggers the bug. Debugging without a repro is guessing.
+
+**Root cause.** The actual defect, not just the visible symptom. A user seeing a 500 error is a symptom. The unhandled null in the OAuth callback is the root cause.
+
+**Regression.** A bug that appeared in code that used to work. Regressions are the single easiest class of bug to debug because git history has the answer.
+
+**Hypothesis-driven debugging.** A method borrowed from science: form a specific, testable claim about what's happening, then design an experiment that would prove the claim wrong.
+
+**Bisect.** Binary search across a space (commits, config values, users, time) to isolate what changed.
+
+**Rubber duck.** Explaining the problem out loud, to a colleague or a literal rubber duck, forces you to be precise about what you actually know versus what you're assuming.
+
+**Postmortem.** The written analysis after an incident that names the timeline, root cause, contributing factors, and structural changes to prevent recurrence.
+
+If your team disagrees about the meaning of "root cause" or "regression," half your debugging arguments are actually vocabulary arguments.
+
+## The Wrong Ways to Start
+
+Before the method, the anti-methods. Everyone has done all of these. Recognize them.
+
+**Randomly changing code until it works.** Sometimes it works, briefly, for reasons you don't understand. That's not a fix; that's masking a bug that will resurface in production with worse timing. Random changes teach you nothing and often ship the actual bug under a new disguise.
+
+**Print-debugging without a hypothesis.** Adding `console.log` at 40 places and hoping the answer emerges. Every print statement should be answering a specific question. If you can't say what the print is testing, you're logging noise, not signal.
+
+**Asking AI "why is this broken" as your first move.** AI will produce a plausible-sounding cause, usually one of three or four common patterns. Sometimes it's right. Often it's confidently wrong. Either way, you skipped the step where you form your own theory, which is the step that makes you a better debugger next time.
+
+**Reading the whole codebase before forming any theory.** For anything but a trivial repo, this doesn't scale. Read enough to form a first hypothesis, then follow the hypothesis.
+
+**Trying to fix before reproducing.** If you can't make it happen, you can't test whether you fixed it. Every "I think this is fixed" ships to production and comes back. Reproduction first, always.
+
+**Assuming it's the last thing that changed.** Sometimes it is; often it isn't. "The bug appeared right after deploy X" is a good hypothesis, not a proof.
+
+## The Method
+
+The core loop of hypothesis-driven debugging. Seven steps. When debugging goes well, you cycle through them fast. When debugging is hard, you slow down and go through each one deliberately.
+
+### Step 1: Reproduce it, then reproduce it reliably
+
+The gap between "it broke for a user once" and "I can make it break on demand" is the biggest single step in debugging. Everything downstream is easier once you have a repro.
+
+Start with the crappiest possible reproduction. A curl command that fails intermittently is enough to begin. Then tighten it: what specifically triggers the failure? What's the smallest input? Which environment?
+
+If you cannot reproduce, that itself is signal. It might be:
+- Data-dependent (only breaks with a specific user's data)
+- Time-dependent (only breaks during peak load, or after a warm-up window)
+- Environment-dependent (only in prod, only in the container, only on ARM)
+- Concurrency-dependent (only under load, only when multiple requests race)
+
+Each of those changes what you look at. Not being able to repro *locally* is different from not being able to repro *at all*. In production, you may need to add observability first and reproduce with logs (see "When You Cannot Reproduce" below).
+
+### Step 2: Form a specific, testable hypothesis
+
+Before you look at any code, write down what you think is happening. Specifically. Not "there's a bug in the auth flow." That's a location, not a hypothesis. Try:
+
+> "The token verification is rejecting valid tokens because the audience claim is being compared against the wrong service ID."
+
+That's a hypothesis. It says exactly what's happening, in exactly which code path, for exactly what reason. It's *falsifiable*: you can look at the audience claim in the logs and either see the wrong service ID or not.
+
+If your hypothesis isn't falsifiable, sharpen it until it is. "Something is wrong with the auth flow" is unfalsifiable and useless. "The token verifier is returning `false` for tokens with valid signatures" is testable in about 30 seconds.
+
+### Step 3: Design an experiment that would prove the hypothesis wrong
+
+Not that would prove it right. That would prove it wrong.
+
+This is the scientific-method move that separates fast debuggers from slow ones. If you look for evidence *for* your theory, you'll find it. Confirmation bias is the whole reason we spend hours chasing wrong theories. Design the experiment that would disprove your theory, and either the theory survives (in which case it's probably right) or you learn something faster.
+
+For the hypothesis above: "log the audience claim on every token verification for the next 100 requests; if all of them contain the expected service ID, my hypothesis is wrong."
+
+### Step 4: Observe reality
+
+Run the experiment. Actually look at the data.
+
+This is the step people skip most often, and it's where the discipline lives. "I think the audience claim is wrong" is a hypothesis. "I ran 100 requests and 42 of them had audience `foo-service` when the verifier expected `bar-service`" is an observation. The observation is what you can act on. The hypothesis, on its own, is not.
+
+Tools for observing reality:
+
+- Log statements at the specific points of interest (deliberate print debugging).
+- An interactive debugger with breakpoints on the specific line.
+- Distributed tracing to see a request across services (see the [observability post](/observability-from-day-one)).
+- A running scratch script that reproduces the bug and prints intermediate state.
+- Metrics: is the failure rate spiking on a specific input dimension?
+
+### Step 5: Compare hypothesis to reality
+
+Two outcomes:
+
+- **Hypothesis matches reality.** You have found the bug, or at least confirmed part of it. Move to Step 7.
+- **Hypothesis does not match reality.** You have learned something. Your model of what's happening was wrong in a specific way. Refine the hypothesis based on what you actually observed, and loop back to Step 2.
+
+Both outcomes are progress. A wrong hypothesis, honestly compared to reality, teaches you more about the system than a lucky guess.
+
+### Step 6: Repeat until you can predict every variable at the point of failure
+
+The bug isn't fully understood until you can predict the state of the program at the moment of failure. Not "the code takes this path"; the actual variable values.
+
+You know you're done when you can walk through the code and say: "the request arrives with these headers, the handler sets these variables, the verifier receives this token, the check compares this to that, and returns false because of this specific mismatch."
+
+If any of that is fuzzy, keep debugging. The fuzz is where the bug is hiding.
+
+### Step 7: Fix, test, and prevent
+
+Once you can predict the state at the failure, the fix is usually obvious. But shipping the fix without three follow-ups is how the same bug ships back a month later.
+
+The three follow-ups:
+
+- **Test the fix specifically.** Write a test that would have caught this exact bug. That test lives forever.
+- **Look for the class, not just the case.** If the token verifier had the wrong audience for OAuth, does the same pattern exist for JWT? For session cookies? For internal service tokens? Fix the whole class if you can.
+- **Ask why it wasn't caught earlier.** Was it a missing test, a missing type, a missing lint rule, a missing monitor? The bug is the visible failure; the *reason it reached production* is the process failure. Both need addressing.
+
+## Techniques Worth Knowing
+
+Beyond the core loop, the tools every debugger should have in reach.
+
+**Bisect and `git bisect`.** If it worked yesterday and doesn't today, `git bisect` walks the commit history in log time to find the exact commit that broke it. Sixteen commits between good and bad? Four bisect steps, done in a coffee break.
+
+**Delta debugging.** For inputs: given a large failing input, remove pieces systematically until the failure disappears; the piece you removed last is (or contains) the trigger. Useful for parser bugs, config bugs, and any "large input causes failure" scenario.
+
+**The "when did it last work" question.** Even without `git bisect`, framing the search as "what was the last known-good state?" narrows the space fast. Yesterday? Last deploy? Before that feature flag flipped? Every "last known good" answer eliminates half the search space.
+
+**Rubber-ducking.** Say the problem out loud to someone (or something). The act of articulating the problem forces you to be precise, and 80% of the time you find the bug while explaining it. When it works, thank the duck.
+
+**Deliberate print debugging.** Not everywhere. Precisely. One question per print, one print per question, and each print has a clear name so you can grep the logs. Prints are the fastest observation tool ever invented; treat them as fast, not sloppy.
+
+**Interactive debuggers.** Node's inspector, Chrome DevTools, `pdb`, `delve`, `dlv`, JetBrains, VSCode. Set a breakpoint at the point of failure, walk the stack, inspect variables. Faster than prints for anything with real complexity. Learn one debugger well; the concepts transfer.
+
+**Time-travel debugging.** Tools like `rr` (Mozilla), Undo.io, or Chrome's Recorder let you record a program's execution and step *backward* through time. Not always feasible, but for gnarly heisenbugs (non-deterministic failures), it's a superpower.
+
+**Distributed tracing.** For anything that spans services, print debugging doesn't work; the trace is the tool. Set up OpenTelemetry properly (see the [observability post](/observability-from-day-one)) and the trace shows you where in the request chain the failure happened.
+
+**Load reproduction.** Some bugs only surface under real concurrency: race conditions, connection pool exhaustion, cache stampede. Tools like `k6`, `wrk`, `hey`, `vegeta` let you replay real traffic patterns at scale. If your bug is "only in prod under load," a load test is your local repro.
+
+## The "I Know What This Is" Traps
+
+The false-safety patterns specific to debugging. Every one of these is common. Every one causes wasted time or a wrong fix.
+
+### Trap 1: "I've reproduced it locally"
+
+**The claim.** Same code, same inputs, works fine on my laptop.
+
+**Why it's misleading.** Local reproduces the bug in the environment you control, which is not the environment where the bug lives. Local has different data, different concurrency, different resource limits, different network latency, different clock, different filesystem, different secrets, and different feature flags. "Reproduced locally" often means "found *a* bug that produces the same symptom," not "found *the* bug."
+
+**The fix.** Reproduce in an environment as close to production as you can. If prod runs on Cloud Run, reproduce in a Cloud Run instance, not in `docker run`. If prod has 200ms cross-region latency, add it to your local repro. And when the fix works locally but not in prod, don't be surprised; the local repro was a different bug the whole time.
+
+### Trap 2: "I know what's happening"
+
+**The claim.** Skipping observation because the answer is obvious.
+
+**Why it's misleading.** Before you actually looked, "obvious" is a guess. Guesses are frequently right; guesses are also frequently wrong in ways you can't see until you observe. The engineers who look fast and are usually right are engineers who observe *anyway*, because they've been burned enough times to know that "obvious" is a bias, not a fact.
+
+**The fix.** Even if you're 95% sure, spend two minutes observing to confirm. Two minutes to confirm a right theory is cheap. Two hours chasing a wrong "obvious" theory is expensive.
+
+### Trap 3: "It's a race condition"
+
+**The claim.** The bug is non-deterministic, so it must be concurrency-related.
+
+**Why it's misleading.** "Race condition" is one of many causes of non-determinism. Others include: time-of-day effects, uninitialized memory, cache warmth, feature flags in different states per instance, external service response variance, database query plan changes, and plain old flaky tests. "Race condition" is the most-guessed and often-wrong theory in intermittent-failure debugging.
+
+**The fix.** If you think it's a race, prove it by removing the concurrency (run serially, run single-threaded) and seeing if the bug disappears. If it doesn't disappear, it wasn't a race.
+
+### Trap 4: "It's a caching issue"
+
+**The claim.** The system is showing stale data; must be a cache bug.
+
+**Why it's misleading.** Caching is over-attributed. Sometimes the cache is right and the source of truth is wrong. Sometimes the read path uses a different query than the write path, and the "cache" is fine, but the data-flow diagram in your head is missing a node.
+
+**The fix.** Verify what the source of truth *actually* has, then verify what the cache has, then verify what the code is reading. All three separately. The mismatch will be somewhere; guess wrong about where and you spend an afternoon flushing a cache that was never the problem.
+
+### Trap 5: "It's flaky"
+
+**The claim.** The test/behavior fails sometimes; it's flaky; retry it.
+
+**Why it's misleading.** Flaky is where real bugs hide. When something works 99% of the time and fails 1%, that 1% is often exactly the bug you'd have shipped to production if you didn't debug it. "Flaky" is what a bug looks like when it's less than 100% reproducible.
+
+**The fix.** Treat every "flaky" test or behavior as a bug you haven't caught yet. Log the failures. Look for the pattern. If you can't find one, at least document that you looked; don't just add auto-retry and move on. Auto-retry is where "flaky" turns into "silent data corruption on 1% of requests."
+
+### Trap 6: "AI suggested this fix and it worked"
+
+**The claim.** Pasted the error into AI, got a suggested fix, applied it, tests pass, we're good.
+
+**Why it's misleading.** "Works" and "fixes the bug" are not the same thing. The AI-suggested fix may have made the specific symptom disappear while leaving the root cause in place. The next time the underlying condition arises, the bug reappears in a different form and you have no idea why, because you never understood the original.
+
+**The fix.** After any AI-suggested fix, explicitly answer: what was the root cause, and how does this fix address that root cause? If you can't answer, you shipped a symptom-fix, not a bug-fix. Roll it back and do Step 2 again.
+
+### Trap 7: "I fixed the symptom, let's move on"
+
+**The claim.** The 500 error is gone; ticket closed.
+
+**Why it's misleading.** The symptom was one visible expression of the underlying issue. The underlying issue produces other symptoms you haven't noticed yet: silent data corruption, downstream metric anomalies, edge cases that hit different code paths. The 500 was the loud one; the quiet ones cost more.
+
+**The fix.** Every "symptom fixed" investigation asks: what other symptoms would this same root cause produce? Look for them in logs, metrics, and open bugs. Sometimes the answer is "just this one." Often it isn't.
+
+### Trap 8: "It only happens for one user"
+
+**The claim.** One customer sees this. Weird edge case. Move on.
+
+**Why it's misleading.** "One user" is a filter, not a diagnosis. That user has *something* different: their data shape, their locale, their permission set, their traffic pattern, their client version. Whatever that something is may be triggering a bug that affects many other users who just haven't hit the exact conditions yet.
+
+**The fix.** For any "one-user" bug, characterize what's specific about that user, then check whether other users share the characteristic. Often the answer is "a lot of users, we just noticed the one that complained loudly." The bug is bigger than one ticket.
+
+## When You Cannot Reproduce
+
+Sometimes you can't force the bug to happen on demand. It happened once in production; you have logs and nothing else. This is where discipline matters most, because it's tempting to give up or to close the ticket as "not reproducible."
+
+Strategies:
+
+**Add observability where the bug last was.** More logs, more tracing, more metrics on the code path that failed. Wait for the bug to happen again with better instrumentation. The second occurrence is usually diagnosable when the first wasn't.
+
+**Look at production data instead of forcing local repro.** If the bug happens for real users, real users are your load test. Query your logs for the failing pattern. What's common across the failures?
+
+**Widen the aperture.** The bug you saw may be one instance of a wider phenomenon. Look for related failures (adjacent endpoints, similar errors, correlated timestamps).
+
+**Ask the user.** Sometimes the affected user can tell you something the logs can't: the browser they used, the exact steps, the language of their input. Users are surprisingly good witnesses if you ask them the right questions.
+
+**Accept that some bugs are non-diagnosable without more data.** File a ticket, add observability, and wait. This is a legitimate outcome; it beats guessing and shipping a wrong "fix."
+
+## The Debugging Prompt That Doesn't Just Guess
+
+AI is genuinely helpful in debugging *if you use it to sharpen your hypothesis, not to skip forming one*. The bad prompt gets a guess; the good prompt gets a falsifier.
+
+**Weak prompt (produces a guess):**
+
+> Why is this broken? [pastes stack trace]
+
+**Structured prompt (produces a testable hypothesis):**
+
+> **Role:** Senior engineer helping me debug.
+> **Context:** The failing behavior is [description]. The reproduction steps are [X]. The observed symptom is [Y]. The code involved is [pasted]. My current hypothesis is [Z].
+> **Task:** (1) Evaluate whether my hypothesis is falsifiable given the code and the symptom. (2) If it is, propose an experiment that would prove it wrong, not right. (3) If it isn't, propose a sharper hypothesis and the experiment for it. (4) List other hypotheses I should consider that fit the same symptom.
+> **Constraint:** Do not suggest a fix yet. Do not summarize the code. Only produce hypotheses and experiments.
+
+Notice the constraint: no fix suggestions. That constraint is doing the work. Without it, the model jumps to "here's a patch" and you're back in Trap 6 (AI-suggested fix that shipped a wrong "fix"). With it, the model helps you think, which is what you actually need.
+
+Once you know the root cause with certainty, then and only then ask the model for a fix. And after applying, run through Step 7 (fix, test, prevent) as usual.
+
+## The Rule Worth Writing on the Whiteboard
+
+**Debugging is the discipline of being systematically less wrong.**
+
+It's not a talent. It's not "getting it right the first time." Senior engineers guess wrong all the time; they just cycle through the hypothesis loop faster than junior engineers, because they know it's a loop and they don't skip steps. Every wrong guess, honestly compared to reality, makes them right sooner. Every skipped observation makes them wrong for longer.
+
+The tools change over the years. The debuggers get better; the tracing gets better; the AI gets more helpful. The discipline underneath is the same: reproduce, hypothesize, falsify, observe, adjust, and don't stop until you can predict every variable at the point of failure.
+
+Whether you're in year one or year twenty, that loop is where the answer lives. Learn it. Use it. Trust it more than any tool that promises to skip it.
