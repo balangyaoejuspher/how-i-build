@@ -66,7 +66,7 @@ Before opening a PR, please read [CONTRIBUTING.md](./CONTRIBUTING.md). It covers
 
 ## Author
 
-Juspher Balangyao. Software Engineer.
+Juspher Balangyao. Blockchain & Software Engineer.
 
 - GitHub: [@balangyaoejuspher](https://github.com/balangyaoejuspher)
 

@@ -47,3 +47,23 @@ craft:
   label: Craft
   permalink: /craft
   description: Individual craft and career skills every engineer needs
+
+blockchain:
+  label: Blockchain
+  permalink: /blockchain
+  description: Blockchain engineering, protocols, and on-chain systems
+
+web3:
+  label: Web3
+  permalink: /web3
+  description: Web3 architecture, tooling, and application patterns
+
+decentralized:
+  label: Decentralized
+  permalink: /decentralized
+  description: Decentralization tradeoffs, governance, and system design
+
+smart-contracts:
+  label: Smart Contracts
+  permalink: /smart-contracts
+  description: Smart contract design, security, and deployment patterns
