@@ -11,15 +11,16 @@ Live at **https://balangyaoejuspher.github.io/how-i-build/**
 
 ## What this is
 
-The blog is organized around a seven-chapter framework, published in reading order:
+The blog is organized around an eight-chapter framework. Chapters 1 through 7 are the general software engineering framework, published in reading order. Chapter 8 is a parallel track for readers building on public blockchains.
 
 1. **Foundation.** Users, MVP, critical path, workload profile, first-order architecture.
 2. **Tech Stack.** Package selection, version pinning, database schema, primary-key strategy, auth and identity, API design.
 3. **Resiliency.** Failure modes, real-world incidents (BullMQ, WAF outages, contract drift), observability, caching.
 4. **Standards.** Clean architecture, CI guardrails, duplication and technical debt, deployment strategies.
 5. **AI Discipline.** Prompt patterns, the blind-paste antipattern, agentic workflow, career traps.
-6. **Working Practices.** Code review, hiring, mentorship.
+6. **Working Practices.** Code review, hiring, collaboration and PR conflict.
 7. **Craft and Career.** Reading unfamiliar code, debugging, growth as an engineer.
+8. **Building On-Chain.** When not to use a blockchain, smart contract false-safety traps, audits, upgrades, MEV, bridges, oracles, wallet UX, governance, and post-hack response.
 
 Every post traces back to a written framework, every recommendation names its trade-offs, and every AI-related post shows how to use assistants without letting them ship your next incident.
 

@@ -1,0 +1,241 @@
+---
+title: "How I Build: When Not to Use a Blockchain, From Someone Who Builds on One"
+authors: [balangyaoejuspher]
+tags: [blockchain, decentralized, craft]
+date: 2026-07-24
+slug: /when-not-to-use-a-blockchain
+---
+
+I build on blockchains for a living. That's the disclosure. The rest of this post is going to sound like I don't, because the honest answer to *"should this thing be on a blockchain"* is almost always no, and the people who work in the space know it better than anyone. Blockchain is a specific tool that solves a specific class of problem, and 90% of the products marketed as "web3" are that specific tool used on the wrong class of problem.
+
+This post is the opener for Chapter 8 of How I Build: **Building On-Chain**. It exists to filter the audience. If you want beginner content on what a blockchain is, there are ten thousand blog posts and a hundred YouTube channels already doing that. What's missing is the honest take from inside the space about when blockchain is the right answer, when it isn't, and the eight reasons projects choose blockchain that would embarrass their engineering leads if they were said out loud.
+
+If you're building something new and considering whether it belongs on-chain, read this first. If you're already building on-chain, read it anyway; if you can defend your architectural choice against every argument in this post, you're building the right thing and the technical chapters ahead will help. If you can't, better to find that out now than after mainnet.
+
+{/* truncate */}
+
+## The Vocabulary Before Anything Else
+
+Loose vocabulary is where blockchain conversations go to die. Names first.
+
+**Chain.** The ordered log of transactions and the state derived from them. That's it. Not magic. Not a database. A specific data structure with specific properties.
+
+**Node.** A machine running the chain's software, validating blocks and maintaining a copy of the state. Full nodes verify everything; light nodes trust others for parts of it.
+
+**Validator (or miner, depending on chain).** The subset of nodes that actually produce blocks and get paid for it. On Ethereum today, ~1M+ validators, but effective control is much more concentrated than that number suggests.
+
+**Consensus.** The mechanism by which validators agree on the next block. Proof of work, proof of stake, delegated proof of stake, and a growing menagerie of variants. The choice determines who can produce blocks, at what cost, and what "51% attack" costs to execute.
+
+**Ledger.** The append-only log itself. Reading historical state is what a ledger gives you cheaply.
+
+**Smart contract.** A program deployed to the chain that executes on state transitions. It's just code, running in a specific virtual machine (EVM, SVM, MoveVM, etc.) with specific limitations (no filesystem, no network, deterministic execution, gas cost per operation).
+
+**On-chain vs off-chain.** On-chain = the state and logic the chain itself verifies and stores. Off-chain = everything else: frontends, indexers, oracles, wallets, servers. Almost every "on-chain" product is 10% on-chain and 90% off-chain. Where the boundary lives is the single most important design decision in the entire product.
+
+**Trust model.** The set of assumptions about who has to be honest, who has to be online, and who has to be uncorrupted for the system to work as advertised. Every system has one. Blockchain doesn't remove trust; it shifts trust to a different set of actors.
+
+**Permissioned vs permissionless.** Permissionless means anyone can transact, run a node, or deploy contracts. Permissioned means someone (a consortium, a company, a government) controls access. Most enterprise "blockchain" projects are permissioned, at which point 90% of the blockchain arguments no longer apply and you probably want a distributed database.
+
+**"Decentralized."** This word is doing more work in marketing than in engineering. There's decentralization of *validators* (who produces blocks), decentralization of *governance* (who upgrades the protocol), decentralization of *state* (who has a copy), decentralization of the *front-end* (who serves the UI), and decentralization of *dependencies* (who provides oracles, RPCs, bridges). Almost every "decentralized" product is decentralized on one or two of those axes and thoroughly centralized on the rest. The marketing rarely says which.
+
+If your team disagrees about what "decentralized" means, you're going to spend six months arguing about a word instead of building.
+
+## What Blockchain Actually Gives You
+
+Short list. Everything else is not a primitive; it's marketing.
+
+**A public verifiable append-only log.** Anyone can download the chain, replay it from genesis, and verify every state transition. This is real, and it's rare. Most databases are opaque to everyone except their operators.
+
+**An adversarial execution environment.** Smart contracts execute in a hostile environment where any input can come from an attacker, any external call can be a griefer, and the code runs in front of thousands of people looking for a mistake. That constraint changes how you write the code; it's a discipline, not a limitation, and it produces software that survives things normal backends would not.
+
+**Programmable escrow / conditional value transfer.** You can hold value in a contract that releases it only when specific on-chain conditions are met, without a trusted third party executing the release. This is the actual thing DeFi uses. It's a small, real primitive.
+
+**Public inspection of state and history.** Every contract's state is queryable by anyone forever. Every transaction is inspectable. This is useful for auditability and terrible for privacy (see the "does not give you" list).
+
+**Censorship resistance in a specific sense.** If enough independent validators are honest, no single actor can prevent a valid transaction from eventually being included. "Enough" and "independent" and "eventually" are all doing real work in that sentence. It's not "censorship resistance" the way the pitch decks say it, but it is a property no traditional database has.
+
+That's the list. Five things. Every blockchain product either uses one or more of these five as its core value proposition, or it's using a blockchain for the wrong reason.
+
+## What Blockchain Does Not Give You
+
+The list of things people assume blockchain provides that it does not.
+
+**Immutability of off-chain data.** The chain records a hash. The data behind the hash lives on IPFS, S3, or somebody's laptop. If the actual data disappears, the immutable hash points to nothing. The chain proves *what the data was* if you still have it; it doesn't preserve the data itself.
+
+**True decentralization of your application.** Your users connect via a wallet, which is a browser extension or app made by a specific company (MetaMask, Rabby, Phantom). Your UI is hosted on a server. Your indexer runs on Alchemy or Infura or a subgraph you deploy to The Graph's hosted service. Your oracle is Chainlink. The chain is decentralized. The system around it, which is the actual product, usually isn't.
+
+**Cheap storage.** On-chain storage is between 10,000x and 1,000,000x more expensive than a database, depending on chain and gas price. Even L2s that reduce this by 100x are still 100x-10,000x more expensive than Postgres. Storing anything larger than a hash on-chain is a decision that needs to be justified per byte.
+
+**Speed.** Even the fastest chains are slower than a well-tuned centralized database by two to five orders of magnitude in throughput and latency. This is a fundamental consequence of global consensus; no amount of engineering makes it comparable.
+
+**Better UX.** Wallet UX is worse than a login page. Transaction UX is worse than a "buy" button. Every user has to hold a private key, understand gas, understand network selection, and read signature prompts they can't verify. Onboarding drop-off in web3 is 90%+ from wallet install to first successful transaction. This is a real product cost, not a rounding error.
+
+**Cheaper transactions.** Retail payments on-chain are more expensive per transaction than Stripe, ACH, or SEPA, in gas alone, before counting the operational overhead of managing wallets and keys. There are specific niches where it's cheaper (international transfers, high-value settlement); most retail use cases aren't among them.
+
+**Privacy.** Every transaction is public forever. Every wallet balance is public. Every contract state is public. The default state of every blockchain is *radical transparency*, which is the opposite of privacy. There are specialized privacy solutions (zk-based mixers, private chains, ring signatures), but they're not the default and using them thoughtlessly can create bigger legal problems than they solve.
+
+**Reliable identity.** A wallet address is not an identity. It's a public key without any binding to a person, a company, or a legal entity. Every "sign in with wallet" flow is authentication of the key, not the human behind it. Real identity in web3 still lives in KYC providers, off-chain attestations, and social recovery services, all of which are centralized.
+
+If a project's pitch mentions any of these as blockchain features, they're either confused or hoping the audience is.
+
+## The Eight "We Should Use Blockchain" Traps
+
+The false-safety patterns specific to tool selection. Every product manager, executive, and investor has repeated at least three of these. Every one signals that the actual requirement hasn't been examined.
+
+### Trap 1: "We need immutability"
+
+**The claim.** Our records must be tamper-proof.
+
+**Why it's misleading.** In almost every case, what the team actually needs is *append-only with an audit log*, not global consensus. A Postgres table with an insert-only constraint, row-level signing, and a periodic Merkle-root anchoring solves this for 99% of "immutability" requirements. Blockchain gives you global consensus on immutability, which is much more than most compliance regimes require and orders of magnitude more expensive to operate.
+
+**The fix.** Ask: *"Who is the adversary we're protecting against?"* If the answer is your own DBA, an append-only table with signed writes solves it. If the answer is your own company's leadership colluding to rewrite history, you may still be better off with a signed hash chain + third-party notary, not a public blockchain. If the answer is *"a nation-state, a coordinated corporate cabal, and the users need to verify themselves without trusting anyone"*, blockchain becomes a legitimate answer.
+
+### Trap 2: "We need decentralization"
+
+**The claim.** We want to remove single points of control.
+
+**Why it's misleading.** "Decentralization" is not a design goal; it's a property that comes at real cost. What most teams actually need is *trust distribution*: multiple independent parties who must agree before a critical action happens. That's a multisig, a threshold signature scheme, or a distributed MPC service. None of those require a global blockchain.
+
+**The fix.** Name the specific actions that need to be trust-distributed and how many honest parties are required. If the answer is "three out of five signers," that's a multisig on any system, including a normal backend that verifies signatures before executing. Public blockchain is required only if the set of trustees is *permissionless* (anyone can join) and *dynamically changing*, which is rarely the product requirement.
+
+### Trap 3: "We need transparency"
+
+**The claim.** Users must be able to inspect what we're doing.
+
+**Why it's misleading.** Transparency is a property of the data being *published*, not of the storage medium. A public read API with signed responses and a published Merkle root gives you full public verifiability. You don't need global consensus for people to be able to check what happened; you need a commitment scheme they can verify against.
+
+**The fix.** Publish a signed audit log. Publish daily Merkle roots. Publish a specification the community can verify against. If your transparency requirement is "any random user, forever, can independently verify the entire history," then a chain starts to earn its cost. Below that bar, it's overkill.
+
+### Trap 4: "We need to remove middlemen"
+
+**The claim.** Blockchain lets us cut out intermediaries.
+
+**Why it's misleading.** Blockchain replaces one set of middlemen with a different set. Instead of banks and payment processors, you have validators, RPC providers, wallet vendors, oracle providers, bridge operators, indexer services, and layer-2 sequencers. Each of those is a middleman with its own trust model, its own economics, and its own failure modes. Some of them are worse (a compromised RPC provider can lie to your UI; a compromised sequencer can censor your users) and some are better (validators are more replaceable than a bank), but *the count of middlemen is not lower*. It's different, and often the difference matters less than the pitch says.
+
+**The fix.** Name the middleman you actually want to remove and check whether blockchain removes them or shifts them. If your bank is charging you 3% and you want to send money globally, on-chain settlement genuinely helps. If your problem is "our internal accounting has too many hands," on-chain doesn't fix that.
+
+### Trap 5: "It's Web3"
+
+**The claim.** We're building a Web3 product.
+
+**Why it's misleading.** "Web3" is a marketing term with no consistent technical meaning. Some people mean "uses a blockchain"; some mean "user-owned data"; some mean "tokenized"; some mean nothing coherent at all. When "Web3" appears in a technical justification for using a blockchain, it's substituting for a real reason.
+
+**The fix.** Strike the word from the internal design docs. If the design still makes sense without it, that's your real requirement. If the design collapses without the label, you didn't have a requirement; you had a vibe.
+
+### Trap 6: "We need proof of X"
+
+**The claim.** We need cryptographic proof of ownership, existence, or authenticity.
+
+**Why it's misleading.** Cryptographic proofs don't require blockchains. A signed hash chain proves order. A Merkle tree proves inclusion. OpenTimestamps proves existence at a specific time. Digital signatures prove authenticity. All of these predate blockchains and work fine without one. Blockchain adds *global consensus* on top of these proofs, which is useful only if global consensus is what you need.
+
+**The fix.** Design the proof structure without a blockchain first. If the proof works on its own, keep it. Only add a blockchain if the proof needs to be verifiable by an untrusted party with no prior relationship, forever, without trusting any specific server.
+
+### Trap 7: "It's tamper-proof"
+
+**The claim.** Once we put it on-chain, nobody can change it.
+
+**Why it's misleading.** The on-chain record is tamper-resistant (not proof; a 51% attack is possible on smaller chains). The application around it is not. If the front-end serving your dApp is compromised, users sign malicious transactions and lose funds even though the chain "worked correctly." Every major DeFi exploit in the last three years included at least one non-chain component: a bridge, an oracle, an admin key, a governance vote, a front-end injection. "It's tamper-proof" describes one layer of a stack that has many layers, and the other layers are often the ones that fail.
+
+**The fix.** Draw the trust boundary of your entire product, not just the smart contract. Include the RPC provider, the wallet, the indexer, the front-end host, the domain registrar, the admin keys, the multisig signers, the oracle providers, and the bridge operators. Every one of those is a potential failure point. "On-chain" secures one specific link; the chain being tamper-proof doesn't protect the other twelve.
+
+### Trap 8: "Investors want blockchain"
+
+**The claim.** Our investors expect a blockchain component.
+
+**Why it's misleading.** This is the most honest reason and the worst engineering reason. When blockchain is a fundraising decision rather than a product decision, the resulting product has a blockchain component bolted on to a system that would work better without it. The bolt-on becomes the biggest source of bugs, the biggest UX friction, and often the reason the product fails to reach users.
+
+**The fix.** If investors want blockchain and the product doesn't need it, that's a strategic conversation, not an architecture conversation. Some founders have honestly succeeded by adding a minimal, honest on-chain component (a token, an on-chain settlement layer) around an otherwise-normal product. That's a legitimate choice. Bolting on a full on-chain architecture because "we're a web3 company" is where the graveyard is.
+
+## The Decision Framework
+
+Blockchain is the right answer if, and only if, one or more of these apply. If none apply, use a database.
+
+1. **Multiple mutually-adversarial parties need to transact with each other**, and no trusted third party is acceptable to any of them. Cross-border settlement between hostile jurisdictions. Trading between anonymous counterparties. Escrow between people who cannot legally bind each other.
+
+2. **Public verifiability is a core product requirement**, meaning any user, forever, must be able to verify the history without trusting any specific server. Voting systems in adversarial settings. Public records with independent auditability. Prediction markets with disputed resolution.
+
+3. **Programmable value transfer is the product.** DeFi (lending, DEXes, derivatives, stablecoins). NFTs with royalties enforced by the protocol rather than a platform. Automated market makers. Insurance pools with conditional payouts.
+
+4. **Censorship resistance is a core value proposition**, meaning users need to be able to transact even when powerful actors want to stop them. Cross-border remittances into sanctioned economies. Whistleblower payment rails. Political speech in authoritarian settings.
+
+5. **Coordination among a large, permissionless, dynamically-changing set of participants** where no consortium can be trusted to run the shared state. Open protocols. Public infrastructure. Community-owned services.
+
+If your requirement doesn't fit at least one of these five, your requirement is genuinely served better by a normal backend, a signed audit log, a multisig, or a hash-chain notary. You'll ship faster, spend less, have better UX, and have a system you can actually fix when something breaks.
+
+## Alternatives That Solve The Actual Need
+
+The specific alternative for each common misuse.
+
+- **Immutability of records** → append-only Postgres table + signed row hashes + periodic Merkle root anchoring to a public place (blockchain or newspaper of record).
+- **Trust distribution** → multisig, threshold signatures (BLS, Schnorr), or MPC. No global consensus needed.
+- **Public transparency** → public read API + published Merkle roots + open-source verifier tool.
+- **Global payments** → Stripe, Wise, or a stablecoin rail that's on-chain but abstracted away from the user.
+- **Proof of existence** → OpenTimestamps. Anchors a hash to Bitcoin for a fraction of a cent.
+- **Authenticity of content** → digital signatures + PKI, or C2PA if it's media.
+- **Auditability** → structured logs + tamper-evident log system (Certificate Transparency-style Merkle log).
+- **Cross-organization workflow** → a shared database with signed writes, or a document workflow tool. Not a blockchain.
+
+Every one of these is cheaper, faster, better UX, and more debuggable than a blockchain equivalent, for the specific need it addresses.
+
+## What Blockchain Actually Costs You
+
+The bill people don't put in the pitch deck.
+
+**Immutable bugs.** A bug shipped to mainnet cannot be patched. You migrate users to a new contract, or you accept the bug, or you set the whole thing on fire. The rework cost of an on-chain bug is 10x to 100x the equivalent backend fix.
+
+**Public exploits.** Your source code, once verified, is readable by every attacker on earth. The attacker doesn't need to compromise your systems to find the bug; they just need to read the contract. Every deployment is an unpatched CVE waiting to happen.
+
+**Gas as UX friction.** Every user action costs the user money, in a currency they may not hold, at a rate that fluctuates minute-to-minute. Every UI decision routes around this. Every product roadmap includes at least one item labeled "make gas invisible somehow."
+
+**Wallet UX.** Every user needs a wallet. Wallet setup is the second-biggest source of churn after price sensitivity. Wallet UX has improved but is still worse than a login form by every measure.
+
+**Regulatory surface.** Depending on jurisdiction and product, on-chain products intersect with securities law, money-transmitter law, sanctions compliance, tax reporting, and consumer-protection regulation, sometimes all five at once. Every design decision needs to be checked against a regulatory landscape that varies by country and changes quarterly.
+
+**Ecosystem dependency.** RPC provider outages take your product down. Oracle failures corrupt your protocol state. Bridge exploits drain your bridged assets. Indexer downtime breaks your UI. You are dependent on a dozen external services that no traditional backend would need.
+
+**Governance overhead.** If your protocol has any admin functions (upgrades, parameter changes, emergency pauses), you need governance: multisig, DAO, or centralized team with a public trust story. Each of these carries operational overhead that a normal product doesn't.
+
+Add these up, and blockchain is not a cost-neutral technology choice. It's a substantial ongoing operational tax. That tax is worth paying for products that genuinely need one of the five real primitives. It's a strategic mistake for products that don't.
+
+## The Test I Actually Run
+
+For any product I'm asked to help design, I run one question:
+
+> *If I built this as a normal backend with signed data and a public read API, would the product materially fail the user's actual need?*
+
+**"Materially fail"** is doing the work. Not *"would investors like it less"*, not *"would we lose the branding"*, not *"would it be less exciting to talk about at conferences."* Actually fail the user's functional need.
+
+If the answer is no, I build the backend. The product ships faster, works better, costs less, and can be fixed when it breaks. Later, if a specific need emerges that only blockchain solves, we add the smallest possible on-chain component to address that need, and everything else stays off-chain.
+
+If the answer is yes, I ask: *"For what specific reason?"* That reason is the actual requirement. Everything else gets built around it. If the reason is "users must transact adversarially with each other," build the settlement contract narrowly and keep the surrounding product normal. If the reason is "public verifiability of a specific claim," build the on-chain proof for that claim and nothing else.
+
+The pattern I've watched work is: **small on-chain kernel, large off-chain product.** The pattern I've watched fail: **large on-chain everything, small off-chain UI layer.** The first ships and iterates. The second gets stuck in gas debates, upgrade migrations, and audit rework, for years.
+
+## The AI Co-Pilot Prompt for Tool Selection
+
+AI is genuinely useful *for stress-testing the choice*, not for making it. The point is to force the model to justify blockchain against real alternatives, not to assume blockchain because the prompt mentioned crypto.
+
+**Weak prompt (rubber-stamps the assumption):**
+
+> How should I design a blockchain-based [X] product?
+
+**Structured prompt (produces something worth reading):**
+
+> **Role:** Senior engineer helping me decide whether to use a blockchain for [product description].
+> **Context:** The user need is [specific]. The adversary I'm defending against is [specific]. The parties involved are [specific]. The trust requirements are [specific]. The proposed on-chain component is [specific].
+> **Task:** (1) Name the specific blockchain primitive being used and why it matters here. (2) Design the same product using signed data + append-only database + public read API + multisig, and describe where that design fails the user need, in one specific sentence per failure. (3) If step 2 doesn't fail the user need, recommend the non-blockchain design and explain why. (4) If step 2 does fail the user need, design the smallest possible on-chain kernel that addresses only the failure, and describe what stays off-chain.
+> **Constraint:** Do not use the words "web3," "decentralized," or "revolutionary." Do not assume blockchain is the answer. Do not describe blockchain benefits generally; only describe them as they specifically address the failure identified in step 2.
+
+The output is a first draft, not a decision. Read it, argue with it, refine the requirement, run it again. What the model is good at is stripping the marketing language out of a design that would otherwise be built on vibes.
+
+## The Rule Worth Writing on the Whiteboard
+
+**Blockchain is a specific answer to a specific question. Ask the question first.**
+
+The projects I've watched succeed on-chain are the ones where the founders can name, in one sentence, which of the five real primitives they need and why nothing else provides it. The projects I've watched fail are the ones that started from *"we want to build in web3"* and worked backward to a requirement. The technology doesn't respect the direction of the argument. It rewards the first framing and punishes the second, every time.
+
+If you're deciding right now, do it in this order. Name the user's real need. Design the boring solution first. Try to break the boring solution. If it holds, ship it. If it breaks in a specific way that blockchain would fix, add the smallest possible on-chain component to address only that break, and leave everything else alone.
+
+The rest of Chapter 8 is going to assume you've done this exercise honestly. Every technical post ahead (smart contract traps, audits, MEV, bridges, oracles, upgrades) is expensive discipline that only pays off if the tool is the right tool. Get the tool selection wrong, and no amount of technical excellence downstream will save the product.
+
+Ask the question first.

@@ -11,7 +11,7 @@ If you are new here, read this page first. It tells you which posts to read base
 
 ## The Framework
 
-Seven chapters, in the order I actually work through them for a new system.
+Eight chapters. Chapters 1 through 7 are the general software engineering framework. Chapter 8 is the on-chain track for readers building on public blockchains.
 
 ```mermaid
 flowchart LR
@@ -20,10 +20,12 @@ flowchart LR
     P3[Chapter 3<br/>Resiliency<br/>Failure Modes,<br/>Real-World Incidents]
     P4[Chapter 4<br/>Standards<br/>Clean Code,<br/>CI/CD Guardrails]
     P5[Chapter 5<br/>AI Discipline<br/>Prompt Patterns,<br/>Agentic Workflow]
-    P6[Chapter 6<br/>Working Practices<br/>Code Review,<br/>Hiring, Mentorship]
+    P6[Chapter 6<br/>Working Practices<br/>Code Review,<br/>Hiring, Collaboration]
     P7[Chapter 7<br/>Craft and Career<br/>Reading Code,<br/>Debugging, Growth]
+    P8[Chapter 8<br/>Building On-Chain<br/>Smart Contracts,<br/>Decentralized Systems]
 
     P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7
+    P4 -.on-chain track.-> P8
 ```
 
 Each chapter has its own posts, plus one or more real-world case studies where I dig into a specific incident or design decision in depth.
@@ -62,6 +64,12 @@ These are the posts that show how I think about the humans around the code.
 4. [Seven Engineering Tasks Where AI Is Worse Than Useless](/what-ai-is-worse-than-useless-at). the anti-recommendation post.
 5. [The AI Co-Pilot Discipline, Myths, Facts, and the Blind-Paste Antipattern](/ai-copilot-discipline). the meta-framework for using AI without letting it use you.
 
+### If you are building on-chain, or considering it
+
+The Chapter 8 track. Written for practitioners, not for the hype crowd. Start with the anti-recommendation, then earn the technical posts.
+
+1. [When Not to Use a Blockchain, From Someone Who Builds on One](/when-not-to-use-a-blockchain). the eight "we should use blockchain" traps, the five real primitives blockchain actually provides, and the alternatives that solve the actual need. If you can defend your architecture against this post, the rest of Chapter 8 is for you.
+
 ### If you have a specific problem right now
 
 - **"My WAF is blocking legitimate traffic"** → [Cloud Run + Cloud Armor incident](/cloud-run-cloud-armor-incident), plus the [WAF Survival Guide](https://balangyaoejuspher.github.io/waf-survival-guide/) (separate repo, cross-provider reference).
@@ -69,6 +77,7 @@ These are the posts that show how I think about the humans around the code.
 - **"Our team is arguing about microservices"** → [First-Order Architecture](/first-order-architecture-decisions).
 - **"A dependency I trusted just broke us"** → [Tech Stack Evaluation and Dependency Risk Mitigation](/tech-stack-evaluation).
 - **"How do we handle a third-party outage"** → [Designing for Resiliency and Failure Modes](/designing-for-resiliency).
+- **"Should this product be on a blockchain"** → [When Not to Use a Blockchain](/when-not-to-use-a-blockchain).
 
 ## The Full Series
 
@@ -120,6 +129,10 @@ Every post, in the order the framework expects you to read them.
 24. [How I Read a Codebase I Didn't Write](/reading-unfamiliar-code)
 25. [Debugging as a Discipline, Not a Vibe. The Mental Model That Beats Random Code Changes and Beats Asking AI Why It Broke](/debugging-as-a-discipline)
 
+**Chapter 8: Building On-Chain**
+
+26. [When Not to Use a Blockchain, From Someone Who Builds on One](/when-not-to-use-a-blockchain)
+
 ## What Is Coming
 
-The framework's initial roadmap (Chapters 1 through 6) is complete. Chapter 7 (Craft and Career) is now in active work: reading unfamiliar code and debugging are shipped; still coming are PR descriptions that get read, the 30-60-90 plan, learning in year N, and giving a talk nobody sleeps through. Requests welcome via [GitHub discussions](https://github.com/balangyaoejuspher/how-i-build/discussions).
+Chapters 1 through 6 are complete. Chapter 7 (Craft and Career) is in active work: reading unfamiliar code and debugging are shipped; still coming are PR descriptions that get read, the 30-60-90 plan, learning in year N, and giving a talk nobody sleeps through. Chapter 8 (Building On-Chain) is now open: after the tool-selection opener, the track continues with the eight smart contract "it's safe" traps, reading a contract before you sign, why audits don't save you, the cost of immutability, indexing, MEV, bridges, upgrades, testing, oracles, wallet UX, governance, and the post-hack playbook. Requests welcome via [GitHub discussions](https://github.com/balangyaoejuspher/how-i-build/discussions).
